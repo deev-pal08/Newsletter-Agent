@@ -9,31 +9,42 @@ Automated intelligence-gathering system for security and AI research. Monitors c
 3. **Ranks** using Claude AI into four priority levels: Critical, Important, Interesting, Reference
 4. **Delivers** a formatted HTML email via Resend
 
+## Prerequisites
+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) package manager
+- [Anthropic API key](https://console.anthropic.com/) for article ranking
+- [Resend API key](https://resend.com/) for email delivery (free tier: 100 emails/day)
+
 ## Quick Start
 
 ```bash
-# Install uv if you don't have it
+# 1. Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Clone and set up
-git clone <your-repo-url>
-cd newsletter-agent
-cp config.example.yaml config.yaml
-cp .env.example .env
+# 2. Clone the repo
+git clone https://github.com/deev-pal08/Newsletter-Agent.git
+cd Newsletter-Agent
 
-# Edit .env with your API keys
-# Edit config.yaml with your interests and email
-
-# Install dependencies
+# 3. Install dependencies
 uv sync
 
-# Test a source
+# 4. Set up your config
+cp config.example.yaml config.yaml
+# Edit config.yaml — add your email under email.to_addresses,
+# customize interests, toggle sources on/off
+
+# 5. Set up API keys
+cp .env.example .env
+# Edit .env — paste your Anthropic and Resend API keys
+
+# 6. Test a source
 uv run newsletter test-source hackernews
 
-# Preview a full digest
+# 7. Preview a full ranked digest (requires Anthropic key)
 uv run newsletter send --dry-run
 
-# Send for real
+# 8. Send for real (requires both keys)
 uv run newsletter send
 ```
 
