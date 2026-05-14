@@ -61,6 +61,26 @@ class SourcesConfig(BaseModel):
     conferences: SourceToggle = SourceToggle(enabled=False)
 
 
+class HealthConfig(BaseModel):
+    max_consecutive_failures: int = 3
+    auto_disable: bool = True
+    retry_after_hours: int = 24
+
+
+class DedupConfig(BaseModel):
+    fuzzy_url: bool = True
+    title_similarity_threshold: float = 0.85
+    strip_query_params: list[str] = Field(default_factory=lambda: [
+        "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+        "ref", "source", "fbclid", "gclid",
+    ])
+
+
+class ScheduleConfig(BaseModel):
+    time: str = "08:00"
+    timezone: str = "America/New_York"
+
+
 class AppConfig(BaseModel):
     interests: list[str] = Field(default_factory=lambda: [
         "web security",
@@ -86,6 +106,9 @@ class AppConfig(BaseModel):
     sources: SourcesConfig = SourcesConfig()
     llm: LLMConfig = LLMConfig()
     email: EmailConfig = EmailConfig()
+    health: HealthConfig = HealthConfig()
+    dedup: DedupConfig = DedupConfig()
+    schedule: ScheduleConfig = ScheduleConfig()
     state_dir: str = "data"
     lookback_hours: int = 24
 

@@ -28,7 +28,7 @@ class ArxivSource(BaseSource):
         return "arxiv"
 
     async def fetch(self, since: datetime | None = None) -> list[Article]:
-        query = "+OR+".join(f"cat:{cat}" for cat in self._categories)
+        query = " OR ".join(f"cat:{cat}" for cat in self._categories)
         params = {
             "search_query": query,
             "sortBy": "submittedDate",

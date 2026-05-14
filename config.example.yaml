@@ -21,6 +21,12 @@ rss_feeds:
   MSRC: https://msrc.microsoft.com/blog/feed
   Google Security Blog: https://security.googleblog.com/feeds/posts/default
   AWS Security Bulletins: https://aws.amazon.com/security/security-bulletins/feed/
+  # AI / ML blogs
+  Anthropic Blog: https://www.anthropic.com/blog/rss
+  OpenAI Blog: https://openai.com/blog/rss.xml
+  Hugging Face Blog: https://huggingface.co/blog/feed.xml
+  Lilian Weng: https://lilianweng.github.io/index.xml
+  The Gradient: https://thegradient.pub/rss/
 
 # Reddit subreddits to monitor (via public RSS, no API key needed)
 reddit_subreddits:
@@ -73,3 +79,27 @@ email:
 # General settings
 lookback_hours: 24
 state_dir: data
+
+# Deduplication settings (v2)
+dedup:
+  fuzzy_url: true                    # normalize URLs before comparing
+  title_similarity_threshold: 0.85   # 0.0–1.0; higher = stricter matching
+  strip_query_params:                # query params removed during normalization
+    - utm_source
+    - utm_medium
+    - utm_campaign
+    - utm_content
+    - utm_term
+    - ref
+    - source
+
+# Source health monitoring (v2)
+health:
+  auto_disable: true                 # auto-skip sources with repeated failures
+  max_consecutive_failures: 3        # failures before auto-disabling
+  retry_after_hours: 24              # retry disabled sources after this cooldown
+
+# Scheduling (v2)
+schedule:
+  time: "08:00"                      # daily digest time (HH:MM)
+  timezone: UTC

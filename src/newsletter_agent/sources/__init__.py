@@ -17,7 +17,12 @@ from newsletter_agent.sources.rss import RSSSource
 if TYPE_CHECKING:
     from newsletter_agent.config import AppConfig
 
-__all__ = ["BaseSource", "SOURCE_REGISTRY", "get_enabled_sources"]
+__all__ = [
+    "BaseSource",
+    "SOURCE_REGISTRY",
+    "get_enabled_sources",
+    "instantiate_source",
+]
 
 SOURCE_REGISTRY: dict[str, type[BaseSource]] = {
     "rss": RSSSource,
@@ -31,31 +36,38 @@ SOURCE_REGISTRY: dict[str, type[BaseSource]] = {
 }
 
 
-def get_enabled_sources(config: AppConfig) -> list[BaseSource]:
-    """Instantiate sources that are enabled in config."""
-    sources: list[BaseSource] = []
-
-    if config.sources.rss.enabled:
-        sources.append(RSSSource(feeds=config.rss_feeds))
-    if config.sources.arxiv.enabled:
-        sources.append(ArxivSource(
+def instantiate_source(source_id: str, config: AppConfig) -> BaseSource:
+    """Create a source instance with proper config-driven arguments."""
+    if source_id == "rss":
+        return RSSSource(feeds=config.rss_feeds)
+    if source_id == "arxiv":
+        return ArxivSource(
             categories=config.sources.arxiv.categories,
             max_results=config.sources.arxiv.max_results,
-        ))
-    if config.sources.hackernews.enabled:
-        sources.append(HackerNewsSource(
+        )
+    if source_id == "hackernews":
+        return HackerNewsSource(
             min_score=config.sources.hackernews.min_score,
             max_stories=config.sources.hackernews.max_stories,
-        ))
-    if config.sources.github_trending.enabled:
-        sources.append(GitHubTrendingSource())
-    if config.sources.reddit.enabled:
-        sources.append(RedditSource(subreddits=config.reddit_subreddits))
-    if config.sources.hackerone.enabled:
-        sources.append(HackerOneSource())
-    if config.sources.oss_security.enabled:
-        sources.append(OSSSecuritySource())
-    if config.sources.conferences.enabled:
-        sources.append(ConferencesSource())
+        )
+    if source_id == "reddit":
+        return RedditSource(subreddits=config.reddit_subreddits)
+    if source_id not in SOURCE_REGISTRY:
+        raise ValueError(f"Unknown source: {source_id}")
+    return SOURCE_REGISTRY[source_id]()
 
+
+def is_source_enabled(source_id: str, config: AppConfig) -> bool:
+    """Check if a source is enabled in config."""
+    toggle = getattr(config.sources, source_id, None)
+    return toggle.enabled if toggle else False
+
+
+def get_enabled_sources(config: AppConfig) -> list[BaseSource]:
+    """Instantiate sources that are enabled in config."""
+    sources = [
+        instantiate_source(sid, config)
+        for sid in SOURCE_REGISTRY
+        if is_source_enabled(sid, config)
+    ]
     return [s for s in sources if s.is_available()]
