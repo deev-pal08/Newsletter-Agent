@@ -48,8 +48,8 @@ uv run newsletter send --dry-run
 # 8. Send for real (requires both keys)
 uv run newsletter send
 
-# 9. (Optional) Install daily schedule
-uv run newsletter install-schedule --time 08:00
+# 9. (Optional) Install daily schedule with Batch API (50% cheaper)
+uv run newsletter install-schedule --batch --submit-time 23:00 --time 08:00
 ```
 
 ## Configuration
@@ -72,16 +72,70 @@ Copy `config.example.yaml` to `config.yaml` and customize:
 |---------|-------------|
 | `newsletter send` | Full pipeline: fetch, rank, email |
 | `newsletter send --dry-run` | Generate HTML without sending |
+| `newsletter send --batch` | Same as send, but 50% cheaper via Batch API |
 | `newsletter digest` | Fetch + rank, print to terminal |
+| `newsletter digest --batch` | Same as digest, using Batch API |
 | `newsletter fetch` | Fetch only, print summary |
 | `newsletter test-source <id>` | Debug a single source |
 | `newsletter sources` | Show source status and health |
 | `newsletter status` | Show system state (SQLite backend) |
 | `newsletter history` | Browse past digests |
 | `newsletter history --detail <ID>` | View a specific past digest |
-| `newsletter install-schedule` | Install daily launchd/cron job |
+| `newsletter batch-submit` | Submit articles for async batch ranking |
+| `newsletter batch-collect` | Collect results from a pending batch job |
+| `newsletter batch-collect --send-email` | Collect results and send digest email |
+| `newsletter install-schedule` | Install daily schedule |
+| `newsletter install-schedule --batch` | Install async batch schedule (50% cheaper) |
 | `newsletter install-schedule --uninstall` | Remove installed schedule |
 | `newsletter re-enable <source>` | Reset error count for a source |
+
+## Batch API (50% Cheaper)
+
+The Claude Batch API processes requests asynchronously at half the cost. Two ways to use it:
+
+**Inline mode** — add `--batch` to any command (waits for results, up to 60 min):
+```bash
+uv run newsletter send --batch --dry-run
+```
+
+**Async mode** — submit at night, collect in the morning:
+```bash
+# Step 1: Submit (returns immediately)
+uv run newsletter batch-submit
+
+# Step 2: Collect when ready
+uv run newsletter batch-collect --send-email
+```
+
+**Automated async schedule** — set it and forget it:
+```bash
+uv run newsletter install-schedule --batch --submit-time 23:00 --time 08:00
+```
+This creates two daily jobs: submit at 11 PM, collect and email at 8 AM.
+
+## Scheduling
+
+Install a daily schedule with one command. Works on all platforms:
+
+| OS | Method | Created by |
+|----|--------|------------|
+| macOS | LaunchAgent (plist) | `launchctl load` |
+| Linux | crontab | `crontab -` |
+| Windows | Task Scheduler | `schtasks /Create` |
+
+```bash
+# Standard mode (full-price, instant ranking)
+uv run newsletter install-schedule --time 08:00
+
+# Batch mode (50% cheaper, async overnight)
+uv run newsletter install-schedule --batch --submit-time 23:00 --time 08:00
+
+# Remove schedule
+uv run newsletter install-schedule --uninstall
+
+# Verify (macOS)
+launchctl list | grep newsletter
+```
 
 ## Environment Variables
 
@@ -92,14 +146,16 @@ Copy `config.example.yaml` to `config.yaml` and customize:
 
 ## Cost
 
-Using Claude Haiku (default): ~$0.045 per run, ~$1.35/month for daily use.
-Using Claude Sonnet: ~$0.135 per run, ~$4.05/month.
+| Model | Per run | Monthly (daily) | With Batch API |
+|-------|---------|-----------------|----------------|
+| Claude Haiku (default) | ~$0.045 | ~$1.35/month | ~$0.68/month |
+| Claude Sonnet | ~$0.135 | ~$4.05/month | ~$2.03/month |
 
 ## Sources
 
 | Source | Method | API Key Required |
 |--------|--------|-----------------|
-| Security blogs (9) | RSS feeds | No |
+| Security blogs (9) + AI blogs (5) | RSS feeds | No |
 | arXiv (cs.CR, cs.AI, cs.LG) | Public API | No |
 | Hacker News | Firebase API | No |
 | GitHub Trending | HTML scraping | No |
@@ -112,14 +168,14 @@ Using Claude Sonnet: ~$0.135 per run, ~$4.05/month.
 
 ```
 src/newsletter_agent/
-├── cli.py              # Click CLI (9 commands)
+├── cli.py              # Click CLI (11 commands)
 ├── config.py           # Pydantic config
 ├── models.py           # Article, Priority, Digest, SourceHealth
 ├── pipeline.py         # Orchestrator (fetch → dedup → rank → deliver)
 ├── utils.py            # URL normalization, title similarity
-├── scheduling.py       # LaunchAgent / crontab scheduling
+├── scheduling.py       # LaunchAgent / crontab / Task Scheduler
 ├── sources/            # Source plugins (one per file)
-├── ranking/            # Claude API ranking
+├── ranking/            # Claude API ranking (sync + batch)
 ├── delivery/           # Resend email + templates
 └── state/              # SQLite persistence
 ```
@@ -130,7 +186,8 @@ src/newsletter_agent/
 - **Fuzzy dedup**: URL normalization (strips tracking params, www, trailing slash), title fingerprinting, cross-source title similarity matching (85% threshold).
 - **Source health monitoring**: Auto-disables sources after 3 consecutive failures, retries after 24h cooldown. Use `re-enable` to reset manually.
 - **Digest history**: Browse past digests with `--since`, `--until`, `--search`, and `--detail` options.
-- **Scheduling**: Install a daily launchd plist (macOS) or crontab entry (Linux) with `install-schedule`.
+- **Batch API**: 50% cheaper ranking via Claude's Batch API. Supports inline (`--batch` flag) and async (`batch-submit` / `batch-collect`) modes.
+- **Cross-platform scheduling**: Install daily jobs on macOS (launchd), Linux (cron), or Windows (Task Scheduler). Supports both sync and async batch modes.
 
 ## Adding a New Source
 

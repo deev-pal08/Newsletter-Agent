@@ -21,7 +21,7 @@ delivers prioritized daily digest via Resend email.
 - `src/newsletter_agent/delivery/` — Resend email + HTML templates
 - `src/newsletter_agent/state/` — SQLite state persistence
 - `src/newsletter_agent/utils.py` — URL normalization, title similarity
-- `src/newsletter_agent/scheduling.py` — LaunchAgent/crontab scheduling
+- `src/newsletter_agent/scheduling.py` — LaunchAgent/crontab/Task Scheduler scheduling
 - `tests/` — mirrors src structure
 - `config.yaml` — user configuration (copy from config.example.yaml)
 
@@ -29,15 +29,21 @@ delivers prioritized daily digest via Resend email.
 ```bash
 uv run newsletter send                  # full pipeline: fetch, rank, email
 uv run newsletter send --dry-run        # preview without sending
+uv run newsletter send --batch          # use Batch API (50% cheaper)
 uv run newsletter send -m claude-sonnet-4-6  # use Sonnet for ranking
 uv run newsletter fetch                 # fetch only, no ranking
 uv run newsletter digest                # fetch + rank, print to terminal
+uv run newsletter digest --batch        # digest via Batch API
 uv run newsletter test-source <id>      # debug one source
 uv run newsletter sources               # list source status + health
 uv run newsletter status                # show state (SQLite backend)
 uv run newsletter history               # browse past digests
 uv run newsletter history --detail <ID> # view full past digest
-uv run newsletter install-schedule      # install daily launchd/cron job
+uv run newsletter batch-submit          # submit for async batch ranking
+uv run newsletter batch-collect         # collect batch results
+uv run newsletter batch-collect --send-email  # collect + send email
+uv run newsletter install-schedule      # install daily schedule
+uv run newsletter install-schedule --batch    # async batch schedule (50% cheaper)
 uv run newsletter install-schedule --uninstall  # remove schedule
 uv run newsletter re-enable <source>    # reset error count for a source
 uv run pytest                           # run tests
@@ -81,4 +87,5 @@ rss, arxiv, hackernews, github_trending, reddit, hackerone, oss_security, confer
 - **Fuzzy dedup**: URL normalization (strip tracking params), title fingerprinting, cross-source similarity matching (difflib, 85% threshold)
 - **Source health**: Auto-disables sources after 3 consecutive failures, 24h retry cooldown, `re-enable` command to reset
 - **Digest history**: Browse past digests with search, date filters, and detail view
-- **Scheduling**: Install daily launchd (macOS) or crontab (Linux) job
+- **Batch API**: 50% cheaper ranking via Claude Batch API — inline (`--batch`) and async (`batch-submit`/`batch-collect`) modes
+- **Cross-platform scheduling**: Daily jobs on macOS (launchd), Linux (cron), Windows (Task Scheduler) — sync and async batch modes
