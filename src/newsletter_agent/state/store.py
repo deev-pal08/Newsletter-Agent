@@ -45,6 +45,18 @@ CREATE TABLE IF NOT EXISTS digests (
     articles_json TEXT
 );
 
+CREATE TABLE IF NOT EXISTS batch_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id TEXT UNIQUE,
+    status TEXT DEFAULT 'submitted',
+    created_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    articles_json TEXT,
+    interests_json TEXT,
+    digest_id INTEGER,
+    error TEXT
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -53,6 +65,7 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE INDEX IF NOT EXISTS idx_seen_normalized ON seen_articles(normalized_url);
 CREATE INDEX IF NOT EXISTS idx_seen_fingerprint ON seen_articles(title_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_digests_date ON digests(date);
+CREATE INDEX IF NOT EXISTS idx_batch_jobs_status ON batch_jobs(status);
 """
 
 
@@ -313,6 +326,71 @@ class StateStore:
             email_sent=bool(row["email_sent"]),
             email_id=row["email_id"],
         )
+
+    # --- Batch jobs ---
+
+    def save_batch_job(
+        self,
+        batch_id: str,
+        articles: list[Article],
+        interests: list[str],
+    ) -> int:
+        now = datetime.now(UTC).isoformat()
+        cursor = self._conn.execute(
+            """INSERT INTO batch_jobs
+               (batch_id, status, created_at, articles_json, interests_json)
+               VALUES (?, 'submitted', ?, ?, ?)""",
+            (
+                batch_id,
+                now,
+                json.dumps([a.model_dump(mode="json") for a in articles]),
+                json.dumps(interests),
+            ),
+        )
+        self._conn.commit()
+        return cursor.lastrowid or 0
+
+    def get_pending_batch(self) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM batch_jobs WHERE status IN ('submitted', 'processing') "
+            "ORDER BY created_at DESC LIMIT 1",
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_batch_status(
+        self,
+        batch_id: str,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        now = datetime.now(UTC).isoformat()
+        self._conn.execute(
+            """UPDATE batch_jobs SET status = ?, completed_at = ?, error = ?
+               WHERE batch_id = ?""",
+            (status, now if status == "ended" else None, error, batch_id),
+        )
+        self._conn.commit()
+
+    def get_batch_articles(self, batch_id: str) -> list[Article]:
+        row = self._conn.execute(
+            "SELECT articles_json FROM batch_jobs WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+        if not row:
+            return []
+        return [
+            Article.model_validate(a)
+            for a in json.loads(row["articles_json"] or "[]")
+        ]
+
+    def get_batch_interests(self, batch_id: str) -> list[str]:
+        row = self._conn.execute(
+            "SELECT interests_json FROM batch_jobs WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+        if not row:
+            return []
+        return json.loads(row["interests_json"] or "[]")
 
     # --- General ---
 

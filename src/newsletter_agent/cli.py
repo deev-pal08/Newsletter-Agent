@@ -51,20 +51,23 @@ def fetch(ctx: click.Context) -> None:
 
 @cli.command()
 @click.option("--model", "-m", help="Override LLM model for this run")
+@click.option("--batch", is_flag=True, help="Use Batch API (50% cheaper, slower)")
 @click.pass_context
-def digest(ctx: click.Context, model: str | None) -> None:
+def digest(ctx: click.Context, model: str | None, batch: bool) -> None:
     """Fetch, rank, and print digest (no email)."""
     from newsletter_agent.pipeline import Pipeline
 
     config = ctx.obj["config"]
     pipeline = Pipeline(config, model_override=model)
-    d = pipeline.run_digest()
+    d = pipeline.run_digest(use_batch=batch)
 
     click.echo(f"\n{'=' * 60}")
     click.echo(f"  DIGEST — {d.date.strftime('%B %d, %Y')}")
     n = len(d.articles)
     click.echo(f"  {d.total_fetched} scanned | {d.total_after_dedup} new | {n} ranked")
     click.echo(f"  Generated in {d.generation_time_seconds:.1f}s")
+    if batch:
+        click.echo("  Mode: Batch API (50% cheaper)")
     click.echo(f"{'=' * 60}\n")
 
     _print_section("CRITICAL — ACT NOW", d.critical, "red")
@@ -76,17 +79,20 @@ def digest(ctx: click.Context, model: str | None) -> None:
 @cli.command()
 @click.option("--model", "-m", help="Override LLM model for this run")
 @click.option("--dry-run", is_flag=True, help="Generate HTML but don't send email")
+@click.option("--batch", is_flag=True, help="Use Batch API (50% cheaper, slower)")
 @click.pass_context
-def send(ctx: click.Context, model: str | None, dry_run: bool) -> None:
+def send(ctx: click.Context, model: str | None, dry_run: bool, batch: bool) -> None:
     """Full pipeline: fetch, rank, format, and send digest email."""
     from newsletter_agent.pipeline import Pipeline
 
     config = ctx.obj["config"]
     pipeline = Pipeline(config, model_override=model)
-    d = pipeline.run_send(dry_run=dry_run)
+    d = pipeline.run_send(dry_run=dry_run, use_batch=batch)
 
     if dry_run:
         click.echo(f"Dry run complete. {len(d.articles)} articles ranked.")
+        if batch:
+            click.echo("Mode: Batch API (50% cheaper)")
         click.echo("HTML preview saved to data/")
     else:
         n_sources = len(d.sources_used)
@@ -276,6 +282,73 @@ def re_enable(ctx: click.Context, source_name: str) -> None:
         click.echo(f"Source '{source_name}' re-enabled. Error count reset to 0.")
     else:
         click.echo(f"Source '{source_name}' has no error history.")
+
+
+@cli.command(name="batch-submit")
+@click.option("--model", "-m", help="Override LLM model for this run")
+@click.pass_context
+def batch_submit(ctx: click.Context, model: str | None) -> None:
+    """Submit articles for async batch ranking (50% cheaper).
+
+    Fetches and deduplicates articles, then submits them to the
+    Claude Batch API. Results are collected later with batch-collect.
+    """
+    from newsletter_agent.pipeline import Pipeline
+
+    config = ctx.obj["config"]
+    pipeline = Pipeline(config, model_override=model)
+    batch_id = pipeline.run_batch_submit()
+
+    if batch_id:
+        click.echo(f"Batch submitted: {batch_id}")
+        click.echo("Run `newsletter batch-collect` to check results.")
+    else:
+        click.echo("No new articles to rank.")
+
+
+@cli.command(name="batch-collect")
+@click.option("--batch-id", "-b", default=None, help="Specific batch ID to collect")
+@click.option("--send-email", is_flag=True, help="Send digest email if results are ready")
+@click.option("--model", "-m", help="Override LLM model for this run")
+@click.pass_context
+def batch_collect(ctx: click.Context, batch_id: str | None, send_email: bool,
+                  model: str | None) -> None:
+    """Collect results from a pending batch job.
+
+    If the batch is still processing, shows the current status.
+    If complete, builds the digest and optionally sends the email.
+    """
+    from newsletter_agent.pipeline import Pipeline
+
+    config = ctx.obj["config"]
+    pipeline = Pipeline(config, model_override=model)
+    digest = pipeline.run_batch_collect(batch_id=batch_id)
+
+    if digest is None:
+        pending = pipeline.state.get_pending_batch()
+        if pending:
+            click.echo(f"Batch {pending['batch_id']} is still processing.")
+            click.echo("Run this command again later.")
+        else:
+            click.echo("No pending batch jobs.")
+        return
+
+    n = len(digest.articles)
+    click.echo(f"\nBatch complete! {n} articles ranked.")
+    click.echo(f"\n{'=' * 60}")
+    click.echo(f"  DIGEST — {digest.date.strftime('%B %d, %Y')}")
+    click.echo(f"{'=' * 60}\n")
+
+    _print_section("CRITICAL — ACT NOW", digest.critical, "red")
+    _print_section("IMPORTANT — READ THIS WEEK", digest.important, "yellow")
+    _print_section("INTERESTING — QUEUE FOR WEEKEND", digest.interesting, "blue")
+    _print_section("REFERENCE — SAVE FOR LATER", digest.reference, "white")
+
+    if send_email and pipeline.delivery:
+        email_id = pipeline.delivery.send_digest(digest)
+        if digest.digest_id:
+            pipeline.state.update_digest_email(digest.digest_id, email_id)
+        click.echo(f"Digest email sent! (email_id={email_id})")
 
 
 def _print_section(title: str, articles: list, color: str) -> None:  # type: ignore[type-arg]
