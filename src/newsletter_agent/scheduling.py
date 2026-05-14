@@ -67,6 +67,13 @@ def install_schedule(
             )
         return _install_launchd_sync(hour, minute, config_path)
 
+    if sys.platform == "win32":
+        if use_batch:
+            return _install_schtasks_batch(
+                submit_hour, submit_minute, hour, minute, config_path,
+            )
+        return _install_schtasks_sync(hour, minute, config_path)
+
     if use_batch:
         return _install_cron_batch(
             submit_hour, submit_minute, hour, minute, config_path,
@@ -78,6 +85,8 @@ def uninstall_schedule() -> bool:
     """Remove all installed schedules. Returns True if something was removed."""
     if sys.platform == "darwin":
         return _uninstall_launchd()
+    if sys.platform == "win32":
+        return _uninstall_schtasks()
     return _uninstall_cron()
 
 
@@ -299,3 +308,101 @@ def _uninstall_cron() -> bool:
     new_crontab = "\n".join(lines) + "\n" if lines else ""
     subprocess.run(["crontab", "-"], input=new_crontab, text=True, check=True)
     return True
+
+
+# --- Windows Task Scheduler ---
+
+SCHTASK_SYNC = "NewsletterAgent"
+SCHTASK_SUBMIT = "NewsletterAgent-Submit"
+SCHTASK_COLLECT = "NewsletterAgent-Collect"
+
+
+def _build_task_command(newsletter_bin: str, subcommand: str, config_abs: str,
+                        extra_args: list[str] | None = None) -> str:
+    parts = [newsletter_bin, subcommand, "--config", config_abs]
+    if extra_args:
+        parts.extend(extra_args)
+    return " ".join(parts)
+
+
+def _create_schtask(task_name: str, time_str: str, command: str,
+                    working_dir: str, log_path: str) -> None:
+    # Delete existing task if present
+    subprocess.run(
+        ["schtasks", "/Delete", "/TN", task_name, "/F"],
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "schtasks", "/Create",
+            "/TN", task_name,
+            "/TR", f'cmd /c "cd /d {working_dir} && {command} >> {log_path} 2>&1"',
+            "/SC", "DAILY",
+            "/ST", time_str,
+            "/F",
+        ],
+        check=True,
+    )
+
+
+def _delete_schtask(task_name: str) -> bool:
+    result = subprocess.run(
+        ["schtasks", "/Delete", "/TN", task_name, "/F"],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def _install_schtasks_sync(hour: int, minute: int, config_path: str) -> str:
+    newsletter_bin = _find_newsletter_bin()
+    working_dir, log_dir, _ = _get_env()
+    config_abs = str(Path(config_path).resolve())
+    log_path = f"{log_dir}\\newsletter-send.log"
+    time_str = f"{hour:02d}:{minute:02d}"
+
+    command = _build_task_command(newsletter_bin, "send", config_abs)
+
+    # Remove batch tasks if they exist
+    _delete_schtask(SCHTASK_SUBMIT)
+    _delete_schtask(SCHTASK_COLLECT)
+
+    _create_schtask(SCHTASK_SYNC, time_str, command, working_dir, log_path)
+    return f"Task: {SCHTASK_SYNC} at {time_str}"
+
+
+def _install_schtasks_batch(
+    submit_hour: int, submit_minute: int,
+    collect_hour: int, collect_minute: int,
+    config_path: str,
+) -> str:
+    newsletter_bin = _find_newsletter_bin()
+    working_dir, log_dir, _ = _get_env()
+    config_abs = str(Path(config_path).resolve())
+
+    # Remove sync task if it exists
+    _delete_schtask(SCHTASK_SYNC)
+
+    submit_time = f"{submit_hour:02d}:{submit_minute:02d}"
+    submit_cmd = _build_task_command(newsletter_bin, "batch-submit", config_abs)
+    submit_log = f"{log_dir}\\newsletter-submit.log"
+    _create_schtask(SCHTASK_SUBMIT, submit_time, submit_cmd, working_dir, submit_log)
+
+    collect_time = f"{collect_hour:02d}:{collect_minute:02d}"
+    collect_cmd = _build_task_command(
+        newsletter_bin, "batch-collect", config_abs, ["--send-email"],
+    )
+    collect_log = f"{log_dir}\\newsletter-collect.log"
+    _create_schtask(SCHTASK_COLLECT, collect_time, collect_cmd, working_dir, collect_log)
+
+    return (
+        f"Submit: {SCHTASK_SUBMIT} at {submit_time}\n"
+        f"Collect: {SCHTASK_COLLECT} at {collect_time}"
+    )
+
+
+def _uninstall_schtasks() -> bool:
+    removed = False
+    for name in [SCHTASK_SYNC, SCHTASK_SUBMIT, SCHTASK_COLLECT]:
+        if _delete_schtask(name):
+            removed = True
+    return removed
