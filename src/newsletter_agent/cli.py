@@ -241,10 +241,13 @@ def history(ctx: click.Context, limit: int, since: str | None, until: str | None
 
 
 @cli.command(name="install-schedule")
-@click.option("--time", "-t", "time_str", default="08:00", help="Daily run time (HH:MM)")
+@click.option("--time", "-t", "time_str", default="08:00", help="Email delivery time (HH:MM)")
+@click.option("--batch", is_flag=True, help="Use async Batch API (50% cheaper)")
+@click.option("--submit-time", default="23:00", help="Batch submit time (HH:MM, used with --batch)")
 @click.option("--uninstall", is_flag=True, help="Remove the installed schedule")
 @click.pass_context
-def install_schedule_cmd(ctx: click.Context, time_str: str, uninstall: bool) -> None:
+def install_schedule_cmd(ctx: click.Context, time_str: str, batch: bool,
+                         submit_time: str, uninstall: bool) -> None:
     """Install or remove a daily schedule (launchd/cron)."""
     from newsletter_agent.scheduling import install_schedule, uninstall_schedule
 
@@ -257,8 +260,17 @@ def install_schedule_cmd(ctx: click.Context, time_str: str, uninstall: bool) -> 
         return
 
     config_path = ctx.obj["config_path"]
-    result = install_schedule(time_str=time_str, config_path=config_path)
-    click.echo(f"Schedule installed: daily at {time_str}")
+    result = install_schedule(
+        time_str=time_str,
+        config_path=config_path,
+        use_batch=batch,
+        submit_time_str=submit_time,
+    )
+    if batch:
+        click.echo("Batch schedule installed (50% cheaper):")
+        click.echo(f"  Submit at {submit_time} → Collect & email at {time_str}")
+    else:
+        click.echo(f"Schedule installed: daily at {time_str}")
     click.echo(f"  {result}")
     click.echo("  Logs: data/logs/newsletter-*.log")
 
