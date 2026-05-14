@@ -1,0 +1,75 @@
+# Newsletter Agent Configuration
+
+# Your research interests (used by Claude to prioritize articles)
+interests:
+  - web security
+  - vulnerability research
+  - LLM security and jailbreaks
+  - AI agents and autonomous systems
+  - exploit development
+  - fuzzing
+  - bug bounty
+
+# RSS feeds to monitor (name: url)
+rss_feeds:
+  PortSwigger Research: https://portswigger.net/research/rss
+  Project Zero: https://googleprojectzero.blogspot.com/feeds/posts/default
+  Trail of Bits: https://blog.trailofbits.com/feed/
+  NCC Group: https://research.nccgroup.com/feed/
+  Synacktiv: https://www.synacktiv.com/feed
+  Bishop Fox: https://bishopfox.com/blog/rss.xml
+  MSRC: https://msrc.microsoft.com/blog/feed
+  Google Security Blog: https://security.googleblog.com/feeds/posts/default
+  AWS Security Bulletins: https://aws.amazon.com/security/security-bulletins/feed/
+
+# Reddit subreddits to monitor (via public RSS, no API key needed)
+reddit_subreddits:
+  - netsec
+  - bugbounty
+  - MachineLearning
+  - LocalLLaMA
+
+# Toggle sources on/off
+sources:
+  rss:
+    enabled: true
+  arxiv:
+    enabled: true
+    categories:
+      - cs.CR
+      - cs.AI
+      - cs.LG
+    max_results: 50
+  hackernews:
+    enabled: true
+    min_score: 50
+    max_stories: 100
+  github_trending:
+    enabled: true
+  reddit:
+    enabled: true
+  hackerone:
+    enabled: false    # enable once GraphQL access is confirmed
+  oss_security:
+    enabled: true
+  conferences:
+    enabled: false    # enable closer to conference season
+
+# LLM settings
+llm:
+  model: claude-haiku-4-5       # cheap default (~$1.35/month)
+  # model: claude-sonnet-4-6    # uncomment for higher quality (~$4/month)
+  api_key_env: ANTHROPIC_API_KEY
+  max_articles_per_batch: 100
+
+# Email delivery via Resend
+email:
+  enabled: true
+  from_address: digest@yourdomain.com
+  to_addresses:
+    - you@example.com
+  api_key_env: RESEND_API_KEY
+
+# General settings
+lookback_hours: 24
+state_dir: data
