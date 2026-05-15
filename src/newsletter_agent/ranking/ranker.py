@@ -135,7 +135,7 @@ class ArticleRanker:
         try:
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=4096,
+                max_tokens=16384,
                 system=RANKING_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_prompt}],
             )
@@ -181,7 +181,7 @@ class BatchRanker:
                 "custom_id": f"ranking-chunk-{i}",
                 "params": {
                     "model": self.model,
-                    "max_tokens": 4096,
+                    "max_tokens": 16384,
                     "system": RANKING_SYSTEM_PROMPT,
                     "messages": [{"role": "user", "content": user_prompt}],
                 },
