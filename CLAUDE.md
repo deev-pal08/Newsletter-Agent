@@ -72,6 +72,7 @@ uv run mypy src/                        # type check
 - API keys come from environment variables, never config files
 - Sources use `instantiate_source()` in sources/__init__.py for construction
 - `RSSSource` and `RedditSource` read their URLs/subreddits from the resources table
+- `WebSource` reads URLs from the resources table and uses tiered extraction (JSON → RSS autodiscovery → HTML structure → AI fallback)
 - User profile (AboutMe.md) is injected into ranking prompts for personalization
 
 ## Resource Management
@@ -79,6 +80,7 @@ uv run mypy src/                        # type check
 - The database starts empty — users populate it via `scan` or `add-resource`
 - Resources with `source_type='rss'` are auto-fetched daily by the RSS source
 - Resources with `source_type='reddit'` are auto-fetched daily by the Reddit source
+- Resources with `source_type='web'` are auto-fetched daily by the Web source (tiered: JSON API → RSS autodiscovery → HTML structure → AI fallback)
 - Resources with `source_type=NULL` are reference-only (bookmarks)
 - `discovered_by` tracks origin: 'user' or 'scan'
 - Manage via CLI: `newsletter resources`, `newsletter add-resource`, `newsletter remove-resource`
@@ -103,10 +105,10 @@ uv run mypy src/                        # type check
 6. Add tests in `tests/sources/test_my_source.py`
 
 ## Source IDs
-rss, arxiv, hackernews, github_trending, reddit, hackerone, oss_security, conferences
+rss, arxiv, hackernews, github_trending, reddit, hackerone, oss_security, conferences, web
 
 ## Environment Variables
-- `ANTHROPIC_API_KEY` — required for ranking and scanning
+- `ANTHROPIC_API_KEY` — required for ranking, scanning, and web source AI fallback
 - `RESEND_API_KEY` — required for email delivery
 
 ## Priority Taxonomy
@@ -124,3 +126,5 @@ rss, arxiv, hackernews, github_trending, reddit, hackerone, oss_security, confer
 - **Cross-platform scheduling**: Daily jobs on macOS (launchd), Linux (cron), Windows (Task Scheduler) — sync and async batch modes
 - **User profile**: AboutMe.md drives personalized ranking and source discovery
 - **Source scanner**: `scan` command uses Claude + web search to discover new sources
+- **DB-backed resources**: All RSS feeds, subreddits, web pages, and discovered resources are stored in SQLite. No hardcoded URLs — the database starts empty and users populate it via `scan` or `add-resource`.
+- **Web source (AI-assisted)**: Generic `source_type='web'` fetches articles from any webpage using tiered extraction: JSON API → RSS autodiscovery → HTML structure → Claude Haiku AI fallback. Only uses AI when deterministic methods fail.

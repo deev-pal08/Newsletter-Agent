@@ -13,6 +13,7 @@ from newsletter_agent.sources.hackerone import HackerOneSource
 from newsletter_agent.sources.oss_security import OSSSecuritySource
 from newsletter_agent.sources.reddit import RedditSource
 from newsletter_agent.sources.rss import RSSSource
+from newsletter_agent.sources.web import WebSource
 
 if TYPE_CHECKING:
     from newsletter_agent.config import AppConfig
@@ -34,6 +35,7 @@ SOURCE_REGISTRY: dict[str, type[BaseSource]] = {
     "hackerone": HackerOneSource,
     "oss_security": OSSSecuritySource,
     "conferences": ConferencesSource,
+    "web": WebSource,
 }
 
 
@@ -59,6 +61,13 @@ def instantiate_source(
     if source_id == "reddit":
         subreddits = state.get_subreddits() if state else []
         return RedditSource(subreddits=subreddits)
+    if source_id == "web":
+        pages = state.get_web_pages() if state else {}
+        try:
+            api_key = config.llm.api_key
+        except ValueError:
+            api_key = None
+        return WebSource(pages=pages, api_key=api_key)
     if source_id not in SOURCE_REGISTRY:
         raise ValueError(f"Unknown source: {source_id}")
     return SOURCE_REGISTRY[source_id]()

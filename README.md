@@ -11,6 +11,7 @@ Personalized research intelligence agent. Monitors curated sources, discovers ne
 5. **Ranks** using Claude AI into four priority levels: Critical, Important, Interesting, Reference — personalized to your profile
 6. **Delivers** a formatted HTML email via Resend
 7. **Tracks** source health, digest history, and seen articles in SQLite
+8. **Extracts** articles from any webpage — JSON APIs, RSS autodiscovery, HTML structure, or AI fallback
 
 ## Prerequisites
 
@@ -173,6 +174,26 @@ It finds blogs (with RSS feeds), YouTube channels, podcasts, newsletters, course
 - Subreddits → `source_type='reddit'` (auto-fetched daily)
 - Everything else → reference only (stored for your records, not auto-fetched)
 
+### Web Source (any webpage)
+
+For sites that don't have RSS feeds, add them as `web` resources:
+
+```bash
+uv run newsletter add-resource --name "SonarSource Blog" \
+  --url "https://www.sonarsource.com/blog/" --type web
+```
+
+The web source uses a tiered extraction strategy — it tries each method in order and stops at the first that returns results:
+
+| Strategy | Method | Cost | When it works |
+|----------|--------|------|---------------|
+| 1. JSON API | Parse structured JSON | Free | Sites with API endpoints (e.g., BugBoard) |
+| 2. RSS autodiscovery | Find linked feeds in HTML | Free | Sites with hidden RSS feeds |
+| 3. HTML structure | Extract from `<article>` tags, heading patterns | Free | Most standard blogs |
+| 4. AI fallback | Claude Haiku extracts articles from page text | ~$0.01/page | JavaScript SPAs, unusual layouts |
+
+AI is only used as a last resort — most sites are handled deterministically at zero cost.
+
 Run it whenever you want to expand your sources — it's not part of the daily pipeline.
 
 ## Scheduling
@@ -203,7 +224,7 @@ launchctl list | grep newsletter
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Claude API key for ranking |
+| `ANTHROPIC_API_KEY` | Yes | Claude API key for ranking, scanning, and web AI fallback |
 | `RESEND_API_KEY` | Yes (for email) | Resend API key for delivery |
 
 ## Cost
@@ -215,7 +236,7 @@ launchctl list | grep newsletter
 
 ## Resource Management
 
-All resources (RSS feeds, subreddits, and reference links) live in the SQLite database. The database starts empty — add sources yourself or let `scan` discover them for you.
+All resources (RSS feeds, subreddits, web pages, and reference links) live in the SQLite database. The database starts empty — add sources yourself or let `scan` discover them for you.
 
 ```bash
 # Discover sources based on your profile (recommended for first setup)
@@ -224,11 +245,15 @@ uv run newsletter scan
 # List all resources in the database
 uv run newsletter resources
 
-# Add a resource manually
+# Add an RSS feed
 uv run newsletter add-resource --name "PortSwigger Research" \
   --url "https://portswigger.net/research" \
   --feed-url "https://portswigger.net/research/rss" \
   --type blog
+
+# Add a web page (auto-extracted via JSON/RSS/HTML/AI)
+uv run newsletter add-resource --name "SonarSource Blog" \
+  --url "https://www.sonarsource.com/blog/" --type web
 
 # Remove a resource by ID
 uv run newsletter remove-resource 42
@@ -245,6 +270,7 @@ On first run, the database is empty. Use `scan` to auto-discover sources based o
 | Hacker News | Firebase API | No |
 | GitHub Trending | HTML scraping | No |
 | Reddit (subreddits from database) | Public RSS | No |
+| Web pages (from database) | JSON/RSS/HTML/AI extraction | No (AI fallback uses Anthropic key) |
 | oss-security | Web scraping | No |
 | HackerOne | GraphQL (experimental) | No |
 | Conferences | Web scraping | No |
@@ -260,7 +286,7 @@ src/newsletter_agent/
 ├── scanner.py          # Source discovery (Claude + web search)
 ├── utils.py            # URL normalization, title similarity
 ├── scheduling.py       # LaunchAgent / crontab / Task Scheduler
-├── sources/            # Source plugins (one per file)
+├── sources/            # Source plugins (one per file, incl. web.py)
 ├── ranking/            # Claude API ranking (sync + batch)
 ├── delivery/           # Resend email + templates
 └── state/              # SQLite persistence + resource database
@@ -276,7 +302,8 @@ src/newsletter_agent/
 - **Cross-platform scheduling**: Install daily jobs on macOS (launchd), Linux (cron), or Windows (Task Scheduler). Supports both sync and async batch modes.
 - **User profile**: `AboutMe.md` personalizes ranking and source discovery based on your background, skills, and learning goals. Works for any domain — security, baking, design, finance, anything.
 - **Source scanner**: `scan` command uses Claude Sonnet + web search to discover blogs, YouTube channels, podcasts, newsletters, courses, tools, communities, and any other resources matching your profile.
-- **DB-backed resources**: All RSS feeds, subreddits, and discovered resources are stored in SQLite. No hardcoded URLs — the database starts empty and users populate it via `scan` or `add-resource`.
+- **DB-backed resources**: All RSS feeds, subreddits, web pages, and discovered resources are stored in SQLite. No hardcoded URLs — the database starts empty and users populate it via `scan` or `add-resource`.
+- **Web source (AI-assisted)**: Generic `source_type='web'` extracts articles from any webpage using a tiered strategy: JSON API → RSS autodiscovery → HTML structure → Claude Haiku AI fallback. Deterministic methods are tried first; AI is only used when they fail.
 
 ## Adding a New Source
 

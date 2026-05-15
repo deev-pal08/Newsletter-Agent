@@ -132,6 +132,9 @@ def sources(ctx: click.Context) -> None:
         elif source_id == "reddit":
             sub_count = len(state.get_subreddits())
             extra = f" ({sub_count} subs)"
+        elif source_id == "web":
+            page_count = len(state.get_web_pages())
+            extra = f" ({page_count} pages)"
 
         click.echo(
             f"  {source_id:<18} {enabled_str:<19} {last_fetch:<22} "
@@ -164,6 +167,8 @@ def resources(ctx: click.Context) -> None:
                 label = "RSS Feeds (auto-fetched daily)"
             elif st == "reddit":
                 label = "Subreddits (auto-fetched daily)"
+            elif st == "web":
+                label = "Web Pages (auto-fetched daily, AI-assisted)"
             else:
                 label = "Other Resources (reference)"
             click.echo(click.style(f"  {label}", bold=True))
@@ -202,6 +207,8 @@ def add_resource(ctx: click.Context, name: str, url: str, feed_url: str | None,
         source_type = "reddit"
         if not name.startswith("r/"):
             name = f"r/{name}"
+    elif res_type == "web":
+        source_type = "web"
 
     result = state.add_resource(
         name=name, url=url, feed_url=feed_url,
@@ -210,9 +217,14 @@ def add_resource(ctx: click.Context, name: str, url: str, feed_url: str | None,
     )
 
     if result is not None:
-        dest = "rss_feeds" if source_type == "rss" else (
-            "subreddits" if source_type == "reddit" else "resources"
-        )
+        if source_type == "rss":
+            dest = "rss_feeds"
+        elif source_type == "reddit":
+            dest = "subreddits"
+        elif source_type == "web":
+            dest = "web_pages"
+        else:
+            dest = "resources"
         click.echo(f"Added '{name}' → {dest} (ID: {result})")
     else:
         click.echo(f"Resource already exists: {url}")
@@ -251,6 +263,7 @@ def status(ctx: click.Context) -> None:
     click.echo(f"  Resources:      {state.resource_count()}")
     click.echo(f"  RSS feeds:      {len(state.get_rss_feeds())}")
     click.echo(f"  Subreddits:     {len(state.get_subreddits())}")
+    click.echo(f"  Web pages:      {len(state.get_web_pages())}")
     click.echo(f"  State backend:  SQLite ({config.state_dir}/newsletter.db)")
     click.echo(f"  LLM model:      {config.llm.model}")
     click.echo(f"  Email enabled:  {config.email.enabled}")

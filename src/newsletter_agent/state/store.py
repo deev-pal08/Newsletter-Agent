@@ -138,6 +138,10 @@ class StateStore:
         rows = self.get_resources(source_type="reddit")
         return [row["name"].removeprefix("r/") for row in rows]
 
+    def get_web_pages(self) -> dict[str, str]:
+        rows = self.get_resources(source_type="web")
+        return {row["name"]: row["url"] for row in rows}
+
     def add_resource(
         self,
         name: str,

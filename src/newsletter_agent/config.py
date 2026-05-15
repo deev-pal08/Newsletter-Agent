@@ -59,6 +59,7 @@ class SourcesConfig(BaseModel):
     hackerone: SourceToggle = SourceToggle(enabled=False)
     oss_security: SourceToggle = SourceToggle()
     conferences: SourceToggle = SourceToggle(enabled=False)
+    web: SourceToggle = SourceToggle()
 
 
 class HealthConfig(BaseModel):
