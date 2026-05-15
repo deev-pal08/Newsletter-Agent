@@ -15,6 +15,9 @@ wheels/
 # User config (contains personal email/settings)
 config.yaml
 
+# User profile (contains personal info)
+AboutMe.md
+
 # Runtime data
 data/
 
