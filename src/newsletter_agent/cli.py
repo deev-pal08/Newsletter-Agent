@@ -24,7 +24,7 @@ def _setup_logging(verbose: bool) -> None:
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.pass_context
 def cli(ctx: click.Context, config: str, verbose: bool) -> None:
-    """Newsletter Agent — Security & AI Research Intelligence Digest"""
+    """Newsletter Agent — Personalized Research Intelligence Digest"""
     ctx.ensure_object(dict)
     _setup_logging(verbose)
     ctx.obj["config"] = load_config(config)
@@ -124,7 +124,114 @@ def sources(ctx: click.Context) -> None:
 
         enabled_str = click.style("yes", fg="green") if enabled else click.style("no", fg="red")
         error_str = click.style(str(errors), fg="red") if errors > 0 else str(errors)
-        click.echo(f"  {source_id:<18} {enabled_str:<19} {last_fetch:<22} {total:<10} {error_str}")
+
+        extra = ""
+        if source_id == "rss":
+            feed_count = len(state.get_rss_feeds())
+            extra = f" ({feed_count} feeds)"
+        elif source_id == "reddit":
+            sub_count = len(state.get_subreddits())
+            extra = f" ({sub_count} subs)"
+
+        click.echo(
+            f"  {source_id:<18} {enabled_str:<19} {last_fetch:<22} "
+            f"{total:<10} {error_str}{extra}"
+        )
+
+
+@cli.command()
+@click.pass_context
+def resources(ctx: click.Context) -> None:
+    """List all resources in the database."""
+    from newsletter_agent.state.store import StateStore
+
+    config = ctx.obj["config"]
+    state = StateStore(config.state_dir)
+    all_res = state.get_all_resources()
+
+    if not all_res:
+        click.echo("\nNo resources in the database.")
+        return
+
+    click.echo(f"\n  {len(all_res)} resources:\n")
+
+    current_source_type = None
+    for r in all_res:
+        st = r["source_type"] or "reference"
+        if st != current_source_type:
+            current_source_type = st
+            if st == "rss":
+                label = "RSS Feeds (auto-fetched daily)"
+            elif st == "reddit":
+                label = "Subreddits (auto-fetched daily)"
+            else:
+                label = "Other Resources (reference)"
+            click.echo(click.style(f"  {label}", bold=True))
+
+        enabled = r["enabled"]
+        status = click.style("on", fg="green") if enabled else click.style("off", fg="red")
+        origin = click.style(f"[{r['discovered_by']}]", fg="bright_black")
+        click.echo(f"    {r['id']:>3}. [{status}] {r['name']}  {origin}")
+        click.echo(click.style(f"         {r['url']}", fg="bright_black"))
+        if r.get("description"):
+            click.echo(click.style(f"         {r['description']}", fg="cyan"))
+
+    click.echo()
+    click.echo("  Use `newsletter add-resource` / `newsletter remove-resource <ID>`.")
+
+
+@cli.command(name="add-resource")
+@click.option("--name", "-n", required=True, help="Resource name")
+@click.option("--url", "-u", required=True, help="Resource URL")
+@click.option("--feed-url", "-f", default=None, help="RSS/Atom feed URL (makes it auto-fetchable)")
+@click.option("--type", "-t", "res_type", default="blog",
+              help="Resource type (blog, subreddit, youtube, etc.)")
+@click.pass_context
+def add_resource(ctx: click.Context, name: str, url: str, feed_url: str | None,
+                 res_type: str) -> None:
+    """Add a resource to the database."""
+    from newsletter_agent.state.store import StateStore
+
+    config = ctx.obj["config"]
+    state = StateStore(config.state_dir)
+
+    source_type = None
+    if feed_url:
+        source_type = "rss"
+    elif res_type == "subreddit":
+        source_type = "reddit"
+        if not name.startswith("r/"):
+            name = f"r/{name}"
+
+    result = state.add_resource(
+        name=name, url=url, feed_url=feed_url,
+        resource_type=res_type, source_type=source_type,
+        discovered_by="user",
+    )
+
+    if result is not None:
+        dest = "rss_feeds" if source_type == "rss" else (
+            "subreddits" if source_type == "reddit" else "resources"
+        )
+        click.echo(f"Added '{name}' → {dest} (ID: {result})")
+    else:
+        click.echo(f"Resource already exists: {url}")
+
+
+@cli.command(name="remove-resource")
+@click.argument("resource_id", type=int)
+@click.pass_context
+def remove_resource(ctx: click.Context, resource_id: int) -> None:
+    """Remove a resource from the database by ID."""
+    from newsletter_agent.state.store import StateStore
+
+    config = ctx.obj["config"]
+    state = StateStore(config.state_dir)
+
+    if state.remove_resource(resource_id):
+        click.echo(f"Removed resource #{resource_id}.")
+    else:
+        click.echo(f"Resource #{resource_id} not found.")
 
 
 @cli.command()
@@ -141,6 +248,9 @@ def status(ctx: click.Context) -> None:
     last = state.last_run
     click.echo(f"  Last run:       {last.strftime('%Y-%m-%d %H:%M:%S') if last else 'never'}")
     click.echo(f"  Seen articles:  {state.seen_count}")
+    click.echo(f"  Resources:      {state.resource_count()}")
+    click.echo(f"  RSS feeds:      {len(state.get_rss_feeds())}")
+    click.echo(f"  Subreddits:     {len(state.get_subreddits())}")
     click.echo(f"  State backend:  SQLite ({config.state_dir}/newsletter.db)")
     click.echo(f"  LLM model:      {config.llm.model}")
     click.echo(f"  Email enabled:  {config.email.enabled}")
@@ -157,6 +267,7 @@ def test_source(ctx: click.Context, source_name: str) -> None:
     import asyncio
 
     from newsletter_agent.sources import SOURCE_REGISTRY, instantiate_source
+    from newsletter_agent.state.store import StateStore
 
     config = ctx.obj["config"]
     if source_name not in SOURCE_REGISTRY:
@@ -164,7 +275,8 @@ def test_source(ctx: click.Context, source_name: str) -> None:
         click.echo(f"Available: {', '.join(SOURCE_REGISTRY.keys())}")
         sys.exit(1)
 
-    source = instantiate_source(source_name, config)
+    state = StateStore(config.state_dir)
+    source = instantiate_source(source_name, config, state)
 
     click.echo(f"Testing source: {source.name} ({source.source_id})")
     click.echo(f"Available: {source.is_available()}")
@@ -361,6 +473,115 @@ def batch_collect(ctx: click.Context, batch_id: str | None, send_email: bool,
         if digest.digest_id:
             pipeline.state.update_digest_email(digest.digest_id, email_id)
         click.echo(f"Digest email sent! (email_id={email_id})")
+
+
+@cli.command()
+@click.option("--dry-run", is_flag=True, help="Show discoveries without adding")
+@click.option("--auto", is_flag=True, help="Automatically add all discovered resources")
+@click.pass_context
+def scan(ctx: click.Context, dry_run: bool, auto: bool) -> None:
+    """Scan the web for new resources matching your profile and interests.
+
+    Uses Claude Sonnet with web search to discover blogs, YouTube channels,
+    podcasts, newsletters, communities, courses, tools, and any other
+    resources relevant to your AboutMe profile. All discoveries are stored
+    in the database.
+    """
+    from newsletter_agent.config import load_about_me
+    from newsletter_agent.scanner import SourceScanner, apply_scan_results
+    from newsletter_agent.state.store import StateStore
+
+    config = ctx.obj["config"]
+    about_me = load_about_me(config.about_me)
+
+    if not about_me and not config.interests:
+        click.echo("No AboutMe.md or interests configured. Nothing to scan for.")
+        click.echo("Create AboutMe.md (see AboutMe.example.md) or add interests to config.yaml.")
+        return
+
+    state = StateStore(config.state_dir)
+
+    click.echo("Scanning for new resources based on your profile...")
+    click.echo("  Model: claude-sonnet-4-6 (with web search)")
+    if about_me:
+        click.echo("  Profile: AboutMe.md loaded")
+    else:
+        click.echo("  Profile: not found (create AboutMe.md for better results)")
+    if config.interests:
+        click.echo(f"  Interests: {', '.join(config.interests)}")
+    click.echo(f"  Existing resources: {state.resource_count()}")
+    click.echo()
+
+    scanner = SourceScanner(config, state, about_me=about_me)
+    results = scanner.scan()
+
+    if results.is_empty:
+        click.echo("No new resources discovered.")
+        return
+
+    click.echo(f"Found {results.total} new resources:\n")
+
+    for i, res in enumerate(results.resources):
+        num = i + 1
+        res_type = res.get("type", "other")
+        name = res.get("name", "")
+        url = res.get("url", "")
+        feed_url = res.get("feed_url")
+        description = res.get("description", "")
+
+        type_label = click.style(f"[{res_type}]", fg="magenta")
+        if feed_url:
+            dest = click.style("→ rss (auto-fetched)", fg="green")
+        elif res_type == "subreddit":
+            dest = click.style("→ reddit (auto-fetched)", fg="green")
+        else:
+            dest = click.style("→ reference", fg="yellow")
+
+        click.echo(f"  {num}. {type_label} {name}  {dest}")
+        click.echo(click.style(f"     {url}", fg="bright_black"))
+        if feed_url:
+            click.echo(click.style(f"     Feed: {feed_url}", fg="bright_black"))
+        if description:
+            click.echo(click.style(f"     {description}", fg="cyan"))
+        click.echo()
+
+    if results.summary:
+        click.echo(click.style(f"  {results.summary}", fg="white"))
+        click.echo()
+
+    if dry_run:
+        click.echo("Dry run — no changes made.")
+        return
+
+    if auto:
+        selected = list(range(results.total))
+    else:
+        click.echo("Enter numbers to add (e.g., 1,3,5), 'all' for everything, or 'none' to skip:")
+        choice = click.prompt("  Add", default="all")
+
+        if choice.lower() == "none":
+            click.echo("No resources added.")
+            return
+        elif choice.lower() == "all":
+            selected = list(range(results.total))
+        else:
+            try:
+                selected = [int(x.strip()) - 1 for x in choice.split(",") if x.strip()]
+            except ValueError:
+                click.echo("Invalid input. No resources added.")
+                return
+
+    feeds, subs, refs = apply_scan_results(state, results, selected)
+
+    total = feeds + subs + refs
+    click.echo(f"\nAdded {total} resources to database:")
+    if feeds:
+        click.echo(f"  {feeds} RSS feeds (auto-fetched daily)")
+    if subs:
+        click.echo(f"  {subs} subreddits (auto-fetched daily)")
+    if refs:
+        click.echo(f"  {refs} reference resources")
+    click.echo("\nRun `newsletter resources` to see all resources.")
 
 
 def _print_section(title: str, articles: list, color: str) -> None:  # type: ignore[type-arg]

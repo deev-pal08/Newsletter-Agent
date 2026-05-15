@@ -1,14 +1,16 @@
 # Newsletter Agent
 
-Automated intelligence-gathering system for security and AI research. Monitors curated sources, uses Claude to filter signal from noise, and delivers a prioritized daily digest via email.
+Personalized research intelligence agent. Monitors curated sources, discovers new ones via web search, uses Claude to filter signal from noise, and delivers a prioritized daily digest via email.
 
 ## What It Does
 
-1. **Fetches** from 8 source types: security blogs (RSS), arXiv papers, Hacker News, GitHub Trending, Reddit, HackerOne disclosures, oss-security mailing list, and conference proceedings
-2. **Deduplicates** using URL normalization, title fingerprinting, and cross-source fuzzy matching
-3. **Ranks** using Claude AI into four priority levels: Critical, Important, Interesting, Reference
-4. **Delivers** a formatted HTML email via Resend
-5. **Tracks** source health, digest history, and seen articles in SQLite
+1. **Profiles** you via `AboutMe.md` — your skills, experience, and learning goals
+2. **Fetches** from 8 source types: RSS blogs, arXiv papers, Hacker News, GitHub Trending, Reddit, HackerOne disclosures, oss-security mailing list, and conference proceedings
+3. **Discovers** new resources via `scan` — Claude + web search finds blogs, YouTube channels, podcasts, newsletters, courses, tools, communities, and anything else relevant to your profile
+4. **Deduplicates** using URL normalization, title fingerprinting, and cross-source fuzzy matching
+5. **Ranks** using Claude AI into four priority levels: Critical, Important, Interesting, Reference — personalized to your profile
+6. **Delivers** a formatted HTML email via Resend
+7. **Tracks** source health, digest history, and seen articles in SQLite
 
 ## Prerequisites
 
@@ -30,25 +32,38 @@ cd Newsletter-Agent
 # 3. Install dependencies
 uv sync
 
-# 4. Set up your config
+# 4. Set up your profile
+cp AboutMe.example.md AboutMe.md
+# Edit AboutMe.md — describe your skills, experience, and learning goals
+
+# 5. Set up your config
 cp config.example.yaml config.yaml
 # Edit config.yaml — add your email under email.to_addresses,
-# customize interests, toggle sources on/off
+# customize interests, toggle source types on/off
 
-# 5. Set up API keys
+# 6. Set up API keys
 cp .env.example .env
 # Edit .env — paste your Anthropic and Resend API keys
 
-# 6. Test a source
+# 7. Add your sources (the DB starts empty — pick one approach)
+# Option A: Discover sources automatically via web search
+uv run newsletter scan
+# Option B: Add sources manually
+uv run newsletter add-resource --name "My Blog" \
+  --url "https://example.com" \
+  --feed-url "https://example.com/rss" \
+  --type blog
+
+# 8. Test a source
 uv run newsletter test-source hackernews
 
-# 7. Preview a full ranked digest (requires Anthropic key)
+# 9. Preview a full ranked digest (requires Anthropic key)
 uv run newsletter send --dry-run
 
-# 8. Send for real (requires both keys)
+# 10. Send for real (requires both keys)
 uv run newsletter send
 
-# 9. (Optional) Install daily schedule with Batch API (50% cheaper)
+# 11. (Optional) Install daily schedule with Batch API (50% cheaper)
 uv run newsletter install-schedule --batch --submit-time 23:00 --time 08:00
 ```
 
@@ -56,15 +71,16 @@ uv run newsletter install-schedule --batch --submit-time 23:00 --time 08:00
 
 Copy `config.example.yaml` to `config.yaml` and customize:
 
+- **about_me**: Path to your `AboutMe.md` profile (default: `AboutMe.md`)
 - **interests**: Your research focus areas (used by Claude for ranking)
-- **rss_feeds**: RSS/Atom feed URLs to monitor
-- **reddit_subreddits**: Subreddits to follow
-- **sources**: Toggle individual sources on/off
+- **sources**: Toggle source types on/off (RSS, arXiv, HN, GitHub, Reddit, etc.)
 - **llm.model**: `claude-haiku-4-5` (cheap) or `claude-sonnet-4-6` (better)
 - **email**: Resend delivery settings
 - **dedup**: Fuzzy URL matching and title similarity threshold
 - **health**: Auto-disable failing sources, retry cooldown
 - **schedule**: Daily digest time and timezone
+
+RSS feeds, subreddits, and other resources are managed in the SQLite database — use the CLI commands below to add, remove, and list them.
 
 ## Commands
 
@@ -76,6 +92,12 @@ Copy `config.example.yaml` to `config.yaml` and customize:
 | `newsletter digest` | Fetch + rank, print to terminal |
 | `newsletter digest --batch` | Same as digest, using Batch API |
 | `newsletter fetch` | Fetch only, print summary |
+| `newsletter scan` | Discover new resources via web search |
+| `newsletter scan --dry-run` | Preview discoveries without adding |
+| `newsletter scan --auto` | Auto-add all discovered resources |
+| `newsletter resources` | List all resources in the database |
+| `newsletter add-resource` | Add a resource to the database |
+| `newsletter remove-resource <ID>` | Remove a resource from the database |
 | `newsletter test-source <id>` | Debug a single source |
 | `newsletter sources` | Show source status and health |
 | `newsletter status` | Show system state (SQLite backend) |
@@ -112,6 +134,46 @@ uv run newsletter batch-collect --send-email
 uv run newsletter install-schedule --batch --submit-time 23:00 --time 08:00
 ```
 This creates two daily jobs: submit at 11 PM, collect and email at 8 AM.
+
+## User Profile (AboutMe.md)
+
+The `AboutMe.md` file tells the agent who you are. Copy the template and fill it in:
+
+```bash
+cp AboutMe.example.md AboutMe.md
+```
+
+Sections:
+- **Who I Am** — your role and background
+- **Skills & Expertise** — what you're already good at (avoids overly basic content)
+- **Experience** — relevant professional/educational background
+- **Learning Goals** — what you want to learn (the agent prioritizes these)
+- **Topics I Follow** — specific subjects to stay updated on
+- **What I'm Building** — current projects (surfaces relevant tools)
+
+The profile is injected into Claude's ranking prompts, so articles are prioritized based on your actual background and goals — not just keyword matching.
+
+## Source Discovery (scan)
+
+The `scan` command uses Claude Sonnet + web search to find new resources of any kind based on your profile:
+
+```bash
+# Interactive — review and pick which resources to add
+uv run newsletter scan
+
+# Preview only — see what it finds without changing config
+uv run newsletter scan --dry-run
+
+# Add everything automatically
+uv run newsletter scan --auto
+```
+
+It finds blogs (with RSS feeds), YouTube channels, podcasts, newsletters, courses, forums, communities, tools, and anything else relevant to your interests. Discovered resources are saved to the database and routed intelligently:
+- Blogs with RSS feeds → `source_type='rss'` (auto-fetched daily)
+- Subreddits → `source_type='reddit'` (auto-fetched daily)
+- Everything else → reference only (stored for your records, not auto-fetched)
+
+Run it whenever you want to expand your sources — it's not part of the daily pipeline.
 
 ## Scheduling
 
@@ -151,15 +213,38 @@ launchctl list | grep newsletter
 | Claude Haiku (default) | ~$0.045 | ~$1.35/month | ~$0.68/month |
 | Claude Sonnet | ~$0.135 | ~$4.05/month | ~$2.03/month |
 
+## Resource Management
+
+All resources (RSS feeds, subreddits, and reference links) live in the SQLite database. The database starts empty — add sources yourself or let `scan` discover them for you.
+
+```bash
+# Discover sources based on your profile (recommended for first setup)
+uv run newsletter scan
+
+# Add a resource manually
+uv run newsletter add-resource --name "PortSwigger Research" \
+  --url "https://portswigger.net/research" \
+  --feed-url "https://portswigger.net/research/rss" \
+  --type blog
+
+# Remove a resource by ID
+uv run newsletter remove-resource 42
+
+# Discover new resources via web search
+uv run newsletter scan
+```
+
+On first run, the database is empty. Use `scan` to auto-discover sources based on your profile, or add them manually with `add-resource`.
+
 ## Sources
 
 | Source | Method | API Key Required |
 |--------|--------|-----------------|
-| Security blogs (9) + AI blogs (5) | RSS feeds | No |
-| arXiv (cs.CR, cs.AI, cs.LG) | Public API | No |
+| RSS feeds (from database) | RSS/Atom feeds | No |
+| arXiv | Public API | No |
 | Hacker News | Firebase API | No |
 | GitHub Trending | HTML scraping | No |
-| Reddit (4 subs) | Public RSS | No |
+| Reddit (subreddits from database) | Public RSS | No |
 | oss-security | Web scraping | No |
 | HackerOne | GraphQL (experimental) | No |
 | Conferences | Web scraping | No |
@@ -168,16 +253,17 @@ launchctl list | grep newsletter
 
 ```
 src/newsletter_agent/
-├── cli.py              # Click CLI (11 commands)
+├── cli.py              # Click CLI (15 commands)
 ├── config.py           # Pydantic config
 ├── models.py           # Article, Priority, Digest, SourceHealth
 ├── pipeline.py         # Orchestrator (fetch → dedup → rank → deliver)
+├── scanner.py          # Source discovery (Claude + web search)
 ├── utils.py            # URL normalization, title similarity
 ├── scheduling.py       # LaunchAgent / crontab / Task Scheduler
 ├── sources/            # Source plugins (one per file)
 ├── ranking/            # Claude API ranking (sync + batch)
 ├── delivery/           # Resend email + templates
-└── state/              # SQLite persistence
+└── state/              # SQLite persistence + resource database
 ```
 
 ## v2 Features
@@ -188,6 +274,9 @@ src/newsletter_agent/
 - **Digest history**: Browse past digests with `--since`, `--until`, `--search`, and `--detail` options.
 - **Batch API**: 50% cheaper ranking via Claude's Batch API. Supports inline (`--batch` flag) and async (`batch-submit` / `batch-collect`) modes.
 - **Cross-platform scheduling**: Install daily jobs on macOS (launchd), Linux (cron), or Windows (Task Scheduler). Supports both sync and async batch modes.
+- **User profile**: `AboutMe.md` personalizes ranking and source discovery based on your background, skills, and learning goals. Works for any domain — security, baking, design, finance, anything.
+- **Source scanner**: `scan` command uses Claude Sonnet + web search to discover blogs, YouTube channels, podcasts, newsletters, courses, tools, communities, and any other resources matching your profile.
+- **DB-backed resources**: All RSS feeds, subreddits, and discovered resources are stored in SQLite. No hardcoded URLs — the database starts empty and users populate it via `scan` or `add-resource`.
 
 ## Adding a New Source
 

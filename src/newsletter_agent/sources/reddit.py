@@ -14,7 +14,7 @@ from newsletter_agent.sources.base import BaseSource
 
 class RedditSource(BaseSource):
     def __init__(self, subreddits: list[str] | None = None):
-        self._subreddits = subreddits or ["netsec", "bugbounty", "MachineLearning", "LocalLLaMA"]
+        self._subreddits = subreddits or []
 
     @property
     def name(self) -> str:

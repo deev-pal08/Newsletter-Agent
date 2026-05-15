@@ -1,5 +1,9 @@
 # Newsletter Agent Configuration
 
+# Your profile (used by Claude for personalized ranking & source discovery)
+# Copy AboutMe.example.md to AboutMe.md and fill in your details
+about_me: AboutMe.md
+
 # Your research interests (used by Claude to prioritize articles)
 interests:
   - web security
@@ -10,32 +14,12 @@ interests:
   - fuzzing
   - bug bounty
 
-# RSS feeds to monitor (name: url)
-rss_feeds:
-  PortSwigger Research: https://portswigger.net/research/rss
-  Project Zero: https://googleprojectzero.blogspot.com/feeds/posts/default
-  Trail of Bits: https://blog.trailofbits.com/feed/
-  NCC Group: https://research.nccgroup.com/feed/
-  Synacktiv: https://www.synacktiv.com/feed
-  Bishop Fox: https://bishopfox.com/blog/rss.xml
-  MSRC: https://msrc.microsoft.com/blog/feed
-  Google Security Blog: https://security.googleblog.com/feeds/posts/default
-  AWS Security Bulletins: https://aws.amazon.com/security/security-bulletins/feed/
-  # AI / ML blogs
-  Anthropic Blog: https://www.anthropic.com/blog/rss
-  OpenAI Blog: https://openai.com/blog/rss.xml
-  Hugging Face Blog: https://huggingface.co/blog/feed.xml
-  Lilian Weng: https://lilianweng.github.io/index.xml
-  The Gradient: https://thegradient.pub/rss/
-
-# Reddit subreddits to monitor (via public RSS, no API key needed)
-reddit_subreddits:
-  - netsec
-  - bugbounty
-  - MachineLearning
-  - LocalLLaMA
-
-# Toggle sources on/off
+# Toggle sources on/off (built-in source types)
+# RSS feeds and subreddits are managed in the database — use:
+#   newsletter resources       # list all resources
+#   newsletter add-resource    # add a resource
+#   newsletter remove-resource # remove a resource
+#   newsletter scan            # discover new resources via web search
 sources:
   rss:
     enabled: true

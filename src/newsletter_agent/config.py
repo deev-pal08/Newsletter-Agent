@@ -82,26 +82,13 @@ class ScheduleConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
+    about_me: str = "AboutMe.md"
     interests: list[str] = Field(default_factory=lambda: [
         "web security",
         "vulnerability research",
         "LLM security",
         "AI agents",
         "exploit development",
-    ])
-    rss_feeds: dict[str, str] = Field(default_factory=lambda: {
-        "PortSwigger Research": "https://portswigger.net/research/rss",
-        "Project Zero": "https://googleprojectzero.blogspot.com/feeds/posts/default",
-        "Trail of Bits": "https://blog.trailofbits.com/feed/",
-        "NCC Group": "https://research.nccgroup.com/feed/",
-        "Synacktiv": "https://www.synacktiv.com/feed",
-        "Bishop Fox": "https://bishopfox.com/blog/rss.xml",
-        "MSRC": "https://msrc.microsoft.com/blog/feed",
-        "Google Security Blog": "https://security.googleblog.com/feeds/posts/default",
-        "AWS Security Bulletins": "https://aws.amazon.com/security/security-bulletins/feed/",
-    })
-    reddit_subreddits: list[str] = Field(default_factory=lambda: [
-        "netsec", "bugbounty", "MachineLearning", "LocalLLaMA",
     ])
     sources: SourcesConfig = SourcesConfig()
     llm: LLMConfig = LLMConfig()
@@ -121,3 +108,11 @@ def load_config(path: str | Path) -> AppConfig:
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
     return AppConfig.model_validate(raw)
+
+
+def load_about_me(path: str | Path) -> str:
+    """Load the AboutMe.md user profile. Returns empty string if not found."""
+    path = Path(path)
+    if not path.exists():
+        return ""
+    return path.read_text().strip()

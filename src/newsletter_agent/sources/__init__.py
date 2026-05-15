@@ -16,6 +16,7 @@ from newsletter_agent.sources.rss import RSSSource
 
 if TYPE_CHECKING:
     from newsletter_agent.config import AppConfig
+    from newsletter_agent.state.store import StateStore
 
 __all__ = [
     "BaseSource",
@@ -36,10 +37,15 @@ SOURCE_REGISTRY: dict[str, type[BaseSource]] = {
 }
 
 
-def instantiate_source(source_id: str, config: AppConfig) -> BaseSource:
+def instantiate_source(
+    source_id: str,
+    config: AppConfig,
+    state: StateStore | None = None,
+) -> BaseSource:
     """Create a source instance with proper config-driven arguments."""
     if source_id == "rss":
-        return RSSSource(feeds=config.rss_feeds)
+        feeds = state.get_rss_feeds() if state else {}
+        return RSSSource(feeds=feeds)
     if source_id == "arxiv":
         return ArxivSource(
             categories=config.sources.arxiv.categories,
@@ -51,7 +57,8 @@ def instantiate_source(source_id: str, config: AppConfig) -> BaseSource:
             max_stories=config.sources.hackernews.max_stories,
         )
     if source_id == "reddit":
-        return RedditSource(subreddits=config.reddit_subreddits)
+        subreddits = state.get_subreddits() if state else []
+        return RedditSource(subreddits=subreddits)
     if source_id not in SOURCE_REGISTRY:
         raise ValueError(f"Unknown source: {source_id}")
     return SOURCE_REGISTRY[source_id]()
@@ -63,10 +70,13 @@ def is_source_enabled(source_id: str, config: AppConfig) -> bool:
     return toggle.enabled if toggle else False
 
 
-def get_enabled_sources(config: AppConfig) -> list[BaseSource]:
+def get_enabled_sources(
+    config: AppConfig,
+    state: StateStore | None = None,
+) -> list[BaseSource]:
     """Instantiate sources that are enabled in config."""
     sources = [
-        instantiate_source(sid, config)
+        instantiate_source(sid, config, state)
         for sid in SOURCE_REGISTRY
         if is_source_enabled(sid, config)
     ]

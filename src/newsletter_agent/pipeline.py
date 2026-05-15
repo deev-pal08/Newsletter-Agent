@@ -7,7 +7,7 @@ import logging
 import time
 from datetime import UTC, datetime, timedelta
 
-from newsletter_agent.config import AppConfig
+from newsletter_agent.config import AppConfig, load_about_me
 from newsletter_agent.delivery.email import EmailDelivery
 from newsletter_agent.delivery.templates import render_digest_html
 from newsletter_agent.models import Article, Digest, Priority
@@ -24,23 +24,33 @@ class Pipeline:
         self.config = config
         self.state = StateStore(config.state_dir)
         self.model = model_override or config.llm.model
-        self.ranker = ArticleRanker(
-            model=self.model,
-            api_key=config.llm.api_key,
-            max_batch_size=config.llm.max_articles_per_batch,
-        )
+        self.about_me = load_about_me(config.about_me)
+        self._ranker: ArticleRanker | None = None
         self.delivery: EmailDelivery | None = None
         if config.email.enabled and config.email.to_addresses:
-            self.delivery = EmailDelivery(
-                api_key=config.email.api_key,
-                from_address=config.email.from_address,
-                to_addresses=config.email.to_addresses,
+            try:
+                self.delivery = EmailDelivery(
+                    api_key=config.email.api_key,
+                    from_address=config.email.from_address,
+                    to_addresses=config.email.to_addresses,
+                )
+            except ValueError:
+                self.delivery = None
+
+    @property
+    def ranker(self) -> ArticleRanker:
+        if self._ranker is None:
+            self._ranker = ArticleRanker(
+                model=self.model,
+                api_key=self.config.llm.api_key,
+                max_batch_size=self.config.llm.max_articles_per_batch,
             )
+        return self._ranker
 
     def run_fetch(self) -> list[Article]:
         """Fetch from all sources and deduplicate."""
         since = datetime.now(UTC) - timedelta(hours=self.config.lookback_hours)
-        sources = get_enabled_sources(self.config)
+        sources = get_enabled_sources(self.config, self.state)
         logger.info("Fetching from %d sources...", len(sources))
 
         all_articles = asyncio.run(self._fetch_all(sources, since))
@@ -50,13 +60,14 @@ class Pipeline:
             "Fetched %d total, %d new after dedup",
             len(all_articles), len(new_articles),
         )
+        self.state.save()
         return new_articles
 
     def run_digest(self, use_batch: bool = False) -> Digest:
         """Fetch, rank, and build digest."""
         start = time.monotonic()
         since = datetime.now(UTC) - timedelta(hours=self.config.lookback_hours)
-        sources = get_enabled_sources(self.config)
+        sources = get_enabled_sources(self.config, self.state)
 
         logger.info("Fetching from %d sources...", len(sources))
         all_articles = asyncio.run(self._fetch_all(sources, since))
@@ -71,7 +82,9 @@ class Pipeline:
                     "Ranking %d articles with %s...",
                     len(new_articles), self.model,
                 )
-                ranked = self.ranker.rank_batch(new_articles, self.config.interests)
+                ranked = self.ranker.rank_batch(
+                    new_articles, self.config.interests, self.about_me,
+                )
         else:
             ranked = []
 
@@ -103,7 +116,7 @@ class Pipeline:
         Returns the batch ID. Results are collected later with batch_collect().
         """
         since = datetime.now(UTC) - timedelta(hours=self.config.lookback_hours)
-        sources = get_enabled_sources(self.config)
+        sources = get_enabled_sources(self.config, self.state)
 
         logger.info("Fetching from %d sources...", len(sources))
         all_articles = asyncio.run(self._fetch_all(sources, since))
@@ -119,7 +132,9 @@ class Pipeline:
             api_key=self.config.llm.api_key,
             max_batch_size=self.config.llm.max_articles_per_batch,
         )
-        batch_id = batch_ranker.submit(new_articles, self.config.interests)
+        batch_id = batch_ranker.submit(
+            new_articles, self.config.interests, self.about_me,
+        )
 
         # Mark articles as seen now (they'll be ranked later)
         for article in new_articles:
@@ -209,7 +224,9 @@ class Pipeline:
             "Ranking %d articles with %s via Batch API (50%% cheaper)...",
             len(articles), self.model,
         )
-        return batch_ranker.submit_and_poll(articles, self.config.interests)
+        return batch_ranker.submit_and_poll(
+            articles, self.config.interests, self.about_me,
+        )
 
     async def _fetch_all(
         self, sources: list, since: datetime,  # type: ignore[type-arg]

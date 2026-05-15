@@ -1,29 +1,32 @@
 # Newsletter Agent
 
 ## Project Overview
-Automated intelligence-gathering system for security and AI research.
-Monitors curated sources, uses Claude API for ranking/categorization,
+Automated intelligence-gathering system for personalized research.
+Monitors curated sources, discovers new ones via web search,
+uses Claude API for ranking/categorization based on user profile,
 delivers prioritized daily digest via Resend email.
 
 ## Tech Stack
 - Python 3.12, managed with uv
-- Claude API (anthropic SDK) for article ranking
+- Claude API (anthropic SDK) for article ranking and source discovery
 - Resend API for email delivery
 - Click for CLI
 - Pydantic for config validation and data models
 - httpx for async HTTP, feedparser for RSS, BeautifulSoup for scraping
-- SQLite for state persistence (v2)
+- SQLite for state persistence AND resource management (v2)
 
 ## Project Structure
 - `src/newsletter_agent/` — main package (src layout)
 - `src/newsletter_agent/sources/` — one module per data source, all extend BaseSource
 - `src/newsletter_agent/ranking/` — Claude API integration for prioritization
 - `src/newsletter_agent/delivery/` — Resend email + HTML templates
-- `src/newsletter_agent/state/` — SQLite state persistence
+- `src/newsletter_agent/state/` — SQLite state persistence + resource DB
+- `src/newsletter_agent/scanner.py` — web-based source discovery (Claude + web search)
 - `src/newsletter_agent/utils.py` — URL normalization, title similarity
 - `src/newsletter_agent/scheduling.py` — LaunchAgent/crontab/Task Scheduler scheduling
+- `AboutMe.md` — user profile (skills, interests, learning goals)
 - `tests/` — mirrors src structure
-- `config.yaml` — user configuration (copy from config.example.yaml)
+- `config.yaml` — operational config only (no URLs — those live in the DB)
 
 ## Key Commands
 ```bash
@@ -34,6 +37,12 @@ uv run newsletter send -m claude-sonnet-4-6  # use Sonnet for ranking
 uv run newsletter fetch                 # fetch only, no ranking
 uv run newsletter digest                # fetch + rank, print to terminal
 uv run newsletter digest --batch        # digest via Batch API
+uv run newsletter scan                  # discover new resources via web search
+uv run newsletter scan --dry-run        # preview discoveries without adding
+uv run newsletter scan --auto           # auto-add all discovered resources
+uv run newsletter resources             # list all resources in DB
+uv run newsletter add-resource          # manually add a resource
+uv run newsletter remove-resource <ID>  # remove a resource by DB ID
 uv run newsletter test-source <id>      # debug one source
 uv run newsletter sources               # list source status + health
 uv run newsletter status                # show state (SQLite backend)
@@ -56,10 +65,34 @@ uv run mypy src/                        # type check
 - Pipeline flow: fetch → deduplicate → rank → format → deliver
 - No source-specific logic in pipeline.py
 - All HTTP requests use httpx (async)
-- State is SQLite in data/newsletter.db (gitignored)
+- State AND resources are SQLite in data/newsletter.db (gitignored)
+- No hardcoded URLs in config — all resources (RSS feeds, subreddits, etc.) live in the DB
+- Config.yaml is operational settings only (toggles, thresholds, API key env vars)
 - Config is validated by Pydantic at load time
 - API keys come from environment variables, never config files
 - Sources use `instantiate_source()` in sources/__init__.py for construction
+- `RSSSource` and `RedditSource` read their URLs/subreddits from the resources table
+- User profile (AboutMe.md) is injected into ranking prompts for personalization
+
+## Resource Management
+- All resources (RSS feeds, subreddits, YouTube channels, etc.) are stored in the `resources` table in SQLite
+- The database starts empty — users populate it via `scan` or `add-resource`
+- Resources with `source_type='rss'` are auto-fetched daily by the RSS source
+- Resources with `source_type='reddit'` are auto-fetched daily by the Reddit source
+- Resources with `source_type=NULL` are reference-only (bookmarks)
+- `discovered_by` tracks origin: 'user' or 'scan'
+- Manage via CLI: `newsletter resources`, `newsletter add-resource`, `newsletter remove-resource`
+
+## Source Discovery (scan command)
+- Uses Claude Sonnet + web search to find ANY resource type: blogs, YouTube channels, podcasts, newsletters, forums, courses, tools, communities, etc.
+- Completely driven by the user's AboutMe.md profile and interests — works for any domain
+- All discoveries are written directly to the SQLite database
+- Resources with RSS feeds get `source_type='rss'` (auto-fetched daily)
+- Subreddits get `source_type='reddit'` (auto-fetched daily)
+- Everything else is stored as reference resources
+- Compares against all existing DB entries to avoid duplicates
+- Interactive: user selects which discoveries to add
+- Not part of the daily pipeline — run manually when you want new resources
 
 ## Adding a New Source
 1. Create `src/newsletter_agent/sources/my_source.py`
@@ -73,7 +106,7 @@ uv run mypy src/                        # type check
 rss, arxiv, hackernews, github_trending, reddit, hackerone, oss_security, conferences
 
 ## Environment Variables
-- `ANTHROPIC_API_KEY` — required for ranking
+- `ANTHROPIC_API_KEY` — required for ranking and scanning
 - `RESEND_API_KEY` — required for email delivery
 
 ## Priority Taxonomy
@@ -89,3 +122,5 @@ rss, arxiv, hackernews, github_trending, reddit, hackerone, oss_security, confer
 - **Digest history**: Browse past digests with search, date filters, and detail view
 - **Batch API**: 50% cheaper ranking via Claude Batch API — inline (`--batch`) and async (`batch-submit`/`batch-collect`) modes
 - **Cross-platform scheduling**: Daily jobs on macOS (launchd), Linux (cron), Windows (Task Scheduler) — sync and async batch modes
+- **User profile**: AboutMe.md drives personalized ranking and source discovery
+- **Source scanner**: `scan` command uses Claude + web search to discover new sources

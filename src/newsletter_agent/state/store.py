@@ -11,7 +11,7 @@ from typing import Any
 from newsletter_agent.models import Article, Digest, SourceHealth
 from newsletter_agent.utils import normalize_url, title_fingerprint
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS seen_articles (
@@ -57,6 +57,19 @@ CREATE TABLE IF NOT EXISTS batch_jobs (
     error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS resources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL UNIQUE,
+    feed_url TEXT,
+    type TEXT NOT NULL,
+    source_type TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    discovered_by TEXT NOT NULL DEFAULT 'user',
+    added_at TEXT NOT NULL,
+    description TEXT
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -66,6 +79,8 @@ CREATE INDEX IF NOT EXISTS idx_seen_normalized ON seen_articles(normalized_url);
 CREATE INDEX IF NOT EXISTS idx_seen_fingerprint ON seen_articles(title_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_digests_date ON digests(date);
 CREATE INDEX IF NOT EXISTS idx_batch_jobs_status ON batch_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_resources_source_type ON resources(source_type);
+CREATE INDEX IF NOT EXISTS idx_resources_enabled ON resources(enabled);
 """
 
 
@@ -86,6 +101,100 @@ class StateStore:
     def _init_db(self) -> None:
         self._conn.executescript(CREATE_TABLES)
         self._conn.commit()
+
+    # --- Resources ---
+
+    def get_resources(
+        self,
+        source_type: str | None = None,
+        enabled_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM resources"
+        conditions = []
+        params: list[Any] = []
+        if source_type is not None:
+            conditions.append("source_type = ?")
+            params.append(source_type)
+        if enabled_only:
+            conditions.append("enabled = 1")
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY name"
+        return [dict(row) for row in self._conn.execute(query, params).fetchall()]
+
+    def get_all_resources(self) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self._conn.execute(
+                "SELECT * FROM resources ORDER BY source_type, name",
+            ).fetchall()
+        ]
+
+    def get_rss_feeds(self) -> dict[str, str]:
+        rows = self.get_resources(source_type="rss")
+        return {row["name"]: (row["feed_url"] or row["url"]) for row in rows}
+
+    def get_subreddits(self) -> list[str]:
+        rows = self.get_resources(source_type="reddit")
+        return [row["name"].removeprefix("r/") for row in rows]
+
+    def add_resource(
+        self,
+        name: str,
+        url: str,
+        *,
+        feed_url: str | None = None,
+        resource_type: str = "other",
+        source_type: str | None = None,
+        discovered_by: str = "user",
+        description: str = "",
+    ) -> int | None:
+        try:
+            cursor = self._conn.execute(
+                """INSERT INTO resources
+                   (name, url, feed_url, type, source_type, enabled,
+                    discovered_by, added_at, description)
+                   VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+                (
+                    name, url, feed_url, resource_type, source_type,
+                    discovered_by, datetime.now(UTC).isoformat(), description,
+                ),
+            )
+            self._conn.commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+    def remove_resource(self, resource_id: int) -> bool:
+        cursor = self._conn.execute(
+            "DELETE FROM resources WHERE id = ?", (resource_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def enable_resource(self, resource_id: int) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE resources SET enabled = 1 WHERE id = ?", (resource_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def disable_resource(self, resource_id: int) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE resources SET enabled = 0 WHERE id = ?", (resource_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def resource_url_exists(self, url: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM resources WHERE url = ?", (url,),
+        ).fetchone()
+        return row is not None
+
+    def resource_count(self) -> int:
+        row = self._conn.execute("SELECT COUNT(*) FROM resources").fetchone()
+        return row[0] if row else 0
 
     # --- Seen articles (dedup) ---
 
