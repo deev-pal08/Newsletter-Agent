@@ -50,9 +50,16 @@ Page content:
 
 
 class WebSource(BaseSource):
-    def __init__(self, pages: dict[str, str], api_key: str | None = None):
+    def __init__(
+        self,
+        pages: dict[str, str],
+        api_key: str | None = None,
+        defer_ai: bool = False,
+    ):
         self._pages = pages
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        self.defer_ai = defer_ai
+        self.pending_extractions: list[dict[str, str]] = []
 
     @property
     def name(self) -> str:
@@ -121,6 +128,19 @@ class WebSource(BaseSource):
         # Strategy 4: AI fallback
         if not self._api_key:
             logger.warning("  %s: no articles found deterministically, and no API key for AI fallback", page_name)
+            return []
+
+        if self.defer_ai:
+            content = _html_to_text(resp.text, page_url)
+            if content.strip():
+                if len(content) > MAX_CONTENT_LENGTH:
+                    content = content[:MAX_CONTENT_LENGTH]
+                self.pending_extractions.append({
+                    "page_name": page_name,
+                    "page_url": page_url,
+                    "content": content,
+                })
+                logger.info("  %s: deferred to batch AI extraction", page_name)
             return []
 
         articles = _try_ai(resp.text, page_name, page_url, since, self._api_key)
@@ -481,3 +501,93 @@ def _parse_date(date_str: str | None) -> datetime | None:
         return dt
     except (ValueError, TypeError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Batch API helpers for deferred AI extraction
+# ---------------------------------------------------------------------------
+
+def submit_extraction_batch(
+    pending: list[dict[str, str]],
+    api_key: str,
+) -> str:
+    """Submit deferred web extractions as a Batch API job. Returns batch ID."""
+    client = anthropic.Anthropic(api_key=api_key)
+
+    requests = []
+    for i, item in enumerate(pending):
+        prompt = AI_EXTRACTION_PROMPT.format(
+            base_url=item["page_url"],
+            content=item["content"],
+        )
+        requests.append({
+            "custom_id": f"web-extract-{i}",
+            "params": {
+                "model": "claude-haiku-4-5",
+                "max_tokens": 4096,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+        })
+
+    batch = client.messages.batches.create(requests=requests)
+    logger.info(
+        "Web extraction batch submitted: %s (%d pages)",
+        batch.id, len(requests),
+    )
+    return batch.id
+
+
+def collect_extraction_results(
+    batch_id: str,
+    pending_meta: list[dict[str, str]],
+    api_key: str,
+    since: datetime | None = None,
+) -> list[Article]:
+    """Collect results from a completed web extraction batch."""
+    client = anthropic.Anthropic(api_key=api_key)
+
+    meta_by_id = {
+        f"web-extract-{i}": item for i, item in enumerate(pending_meta)
+    }
+
+    articles: list[Article] = []
+    for result in client.messages.batches.results(batch_id):
+        meta = meta_by_id.get(result.custom_id)
+        if not meta:
+            continue
+
+        if result.result.type != "succeeded":
+            logger.warning(
+                "Web extraction %s failed: %s",
+                result.custom_id, result.result.type,
+            )
+            continue
+
+        text = result.result.message.content[0].text  # type: ignore[union-attr]
+        extracted = _parse_json_response(text)
+
+        for item in extracted:
+            title = item.get("title", "").strip()
+            url = item.get("url", "").strip()
+            if not title or not url:
+                continue
+
+            url = urljoin(meta["page_url"], url)
+            published = _parse_date(item.get("date"))
+            if since and published and published < since:
+                continue
+
+            articles.append(Article(
+                title=title,
+                url=url,
+                source_id="web",
+                source_name=meta["page_name"],
+                published_at=published,
+                raw_summary=item.get("summary", ""),
+            ))
+
+    logger.info(
+        "Web extraction batch %s: %d articles collected",
+        batch_id, len(articles),
+    )
+    return articles

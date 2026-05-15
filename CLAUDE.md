@@ -122,9 +122,10 @@ rss, arxiv, hackernews, github_trending, reddit, hackerone, oss_security, confer
 - **Fuzzy dedup**: URL normalization (strip tracking params), title fingerprinting, cross-source similarity matching (difflib, 85% threshold)
 - **Source health**: Auto-disables sources after 3 consecutive failures, 24h retry cooldown, `re-enable` command to reset
 - **Digest history**: Browse past digests with search, date filters, and detail view
-- **Batch API**: 50% cheaper ranking via Claude Batch API — inline (`--batch`) and async (`batch-submit`/`batch-collect`) modes
+- **Batch API**: 50% cheaper ranking via Claude Batch API — inline (`--batch`) and async (`batch-submit`/`batch-collect`) modes. Web AI extraction is also batched in async mode.
 - **Cross-platform scheduling**: Daily jobs on macOS (launchd), Linux (cron), Windows (Task Scheduler) — sync and async batch modes
 - **User profile**: AboutMe.md drives personalized ranking and source discovery
 - **Source scanner**: `scan` command uses Claude + web search to discover new sources
 - **DB-backed resources**: All RSS feeds, subreddits, web pages, and discovered resources are stored in SQLite. No hardcoded URLs — the database starts empty and users populate it via `scan` or `add-resource`.
-- **Web source (AI-assisted)**: Generic `source_type='web'` fetches articles from any webpage using tiered extraction: JSON API → RSS autodiscovery → HTML structure → Claude Haiku AI fallback. Only uses AI when deterministic methods fail.
+- **Web source (AI-assisted)**: Generic `source_type='web'` fetches articles from any webpage using tiered extraction: JSON API → RSS autodiscovery → HTML structure → Claude Haiku AI fallback. Only uses AI when deterministic methods fail. In async batch mode, AI extraction is deferred and submitted via Batch API for 50% savings.
+- **Permanent article history**: `seen_articles` table is never pruned — serves as both dedup index and full read history of every article ever processed.

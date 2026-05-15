@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,11 @@ from newsletter_agent.delivery.templates import render_digest_html
 from newsletter_agent.models import Article, Digest, Priority
 from newsletter_agent.ranking.ranker import ArticleRanker, BatchRanker
 from newsletter_agent.sources import get_enabled_sources
+from newsletter_agent.sources.web import (
+    WebSource,
+    collect_extraction_results,
+    submit_extraction_batch,
+)
 from newsletter_agent.state.store import StateStore
 from newsletter_agent.utils import titles_similar
 
@@ -106,7 +112,6 @@ class Pipeline:
             self.state.mark_seen(article)
         digest_id = self.state.save_digest(digest)
         digest.digest_id = digest_id
-        self.state.prune_seen()
         self.state.save()
 
         return digest
@@ -117,6 +122,11 @@ class Pipeline:
         """
         since = datetime.now(UTC) - timedelta(hours=self.config.lookback_hours)
         sources = get_enabled_sources(self.config, self.state)
+
+        # Enable deferred AI extraction on web sources
+        for source in sources:
+            if isinstance(source, WebSource):
+                source.defer_ai = True
 
         logger.info("Fetching from %d sources...", len(sources))
         all_articles = asyncio.run(self._fetch_all(sources, since))
@@ -136,6 +146,28 @@ class Pipeline:
             new_articles, self.config.interests, self.about_me,
         )
 
+        # Submit web extraction batch if any pages need AI
+        pending = []
+        for source in sources:
+            if isinstance(source, WebSource):
+                pending.extend(source.pending_extractions)
+
+        extraction_batch_id = ""
+        if pending:
+            try:
+                extraction_batch_id = submit_extraction_batch(
+                    pending, self.config.llm.api_key,
+                )
+                self.state._set_meta(
+                    "extraction_batch_id", extraction_batch_id,
+                )
+                self.state._set_meta(
+                    "extraction_pending",
+                    json.dumps(pending),
+                )
+            except Exception:
+                logger.exception("Failed to submit web extraction batch")
+
         # Mark articles as seen now (they'll be ranked later)
         for article in new_articles:
             self.state.mark_seen(article)
@@ -144,6 +176,11 @@ class Pipeline:
         # Save batch job so we can collect results later
         self.state.save_batch_job(batch_id, new_articles, self.config.interests)
         logger.info("Batch %s submitted with %d articles", batch_id, len(new_articles))
+        if extraction_batch_id:
+            logger.info(
+                "Extraction batch %s submitted with %d pages",
+                extraction_batch_id, len(pending),
+            )
         return batch_id
 
     def run_batch_collect(self, batch_id: str | None = None) -> Digest | None:
@@ -171,6 +208,45 @@ class Pipeline:
 
         articles = self.state.get_batch_articles(batch_id)
         ranked = batch_ranker.collect_results(batch_id, articles)
+
+        # Collect web extraction results if a batch was submitted
+        extraction_batch_id = self.state._get_meta("extraction_batch_id")
+        if extraction_batch_id:
+            try:
+                ext_status = batch_ranker.check_status(extraction_batch_id)
+                if ext_status == "ended":
+                    pending_json = self.state._get_meta("extraction_pending") or "[]"
+                    pending_meta = json.loads(pending_json)
+                    since = datetime.now(UTC) - timedelta(
+                        hours=self.config.lookback_hours,
+                    )
+                    extracted = collect_extraction_results(
+                        extraction_batch_id, pending_meta,
+                        self.config.llm.api_key, since,
+                    )
+                    # Deduplicate extracted articles against ranked ones
+                    ranked_urls = {a.normalized_url for a in ranked}
+                    for a in extracted:
+                        if a.normalized_url not in ranked_urls:
+                            a.priority = Priority.REFERENCE
+                            a.ai_summary = "Extracted via web AI (unranked)"
+                            ranked.append(a)
+                            self.state.mark_seen(a)
+                    logger.info(
+                        "Added %d articles from web extraction batch",
+                        len(extracted),
+                    )
+                else:
+                    logger.warning(
+                        "Web extraction batch %s not ready: %s",
+                        extraction_batch_id, ext_status,
+                    )
+            except Exception:
+                logger.exception("Failed to collect web extraction results")
+            finally:
+                self.state._set_meta("extraction_batch_id", "")
+                self.state._set_meta("extraction_pending", "")
+
         ranked.sort(
             key=lambda a: list(Priority).index(a.priority) if a.priority else 99,
         )

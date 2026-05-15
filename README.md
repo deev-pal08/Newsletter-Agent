@@ -134,7 +134,7 @@ uv run newsletter batch-collect --send-email
 ```bash
 uv run newsletter install-schedule --batch --submit-time 23:00 --time 08:00
 ```
-This creates two daily jobs: submit at 11 PM, collect and email at 8 AM.
+This creates two daily jobs: submit at 11 PM, collect and email at 8 AM. Both ranking and web AI extraction are batched at 50% off.
 
 ## User Profile (AboutMe.md)
 
@@ -298,12 +298,13 @@ src/newsletter_agent/
 - **Fuzzy dedup**: URL normalization (strips tracking params, www, trailing slash), title fingerprinting, cross-source title similarity matching (85% threshold).
 - **Source health monitoring**: Auto-disables sources after 3 consecutive failures, retries after 24h cooldown. Use `re-enable` to reset manually.
 - **Digest history**: Browse past digests with `--since`, `--until`, `--search`, and `--detail` options.
-- **Batch API**: 50% cheaper ranking via Claude's Batch API. Supports inline (`--batch` flag) and async (`batch-submit` / `batch-collect`) modes.
+- **Batch API**: 50% cheaper ranking via Claude's Batch API. Supports inline (`--batch` flag) and async (`batch-submit` / `batch-collect`) modes. In async mode, web AI extraction is also batched for additional savings.
 - **Cross-platform scheduling**: Install daily jobs on macOS (launchd), Linux (cron), or Windows (Task Scheduler). Supports both sync and async batch modes.
 - **User profile**: `AboutMe.md` personalizes ranking and source discovery based on your background, skills, and learning goals. Works for any domain — security, baking, design, finance, anything.
 - **Source scanner**: `scan` command uses Claude Sonnet + web search to discover blogs, YouTube channels, podcasts, newsletters, courses, tools, communities, and any other resources matching your profile.
 - **DB-backed resources**: All RSS feeds, subreddits, web pages, and discovered resources are stored in SQLite. No hardcoded URLs — the database starts empty and users populate it via `scan` or `add-resource`.
-- **Web source (AI-assisted)**: Generic `source_type='web'` extracts articles from any webpage using a tiered strategy: JSON API → RSS autodiscovery → HTML structure → Claude Haiku AI fallback. Deterministic methods are tried first; AI is only used when they fail.
+- **Web source (AI-assisted)**: Generic `source_type='web'` extracts articles from any webpage using a tiered strategy: JSON API → RSS autodiscovery → HTML structure → Claude Haiku AI fallback. Deterministic methods are tried first; AI is only used when they fail. In async batch mode, AI extraction is deferred and submitted via Batch API for 50% savings.
+- **Permanent article history**: The `seen_articles` table is never pruned, serving as both a dedup index and a permanent read history of every article ever processed.
 
 ## Adding a New Source
 
