@@ -110,8 +110,8 @@ rss, arxiv, hackernews, github_trending, reddit, hackerone, oss_security, confer
 - `RESEND_API_KEY` — required for email delivery
 
 ## Priority Taxonomy
-- `CRITICAL - ACT NOW` — active CVE/exploit in studied domains
-- `IMPORTANT - READ THIS WEEK` — relevant paper/tool, not urgent
+- `CRITICAL - ACT NOW` — urgent, time-sensitive, directly impacts user's work
+- `IMPORTANT - READ THIS WEEK` — relevant paper/tool/update, not urgent
 - `INTERESTING - QUEUE FOR WEEKEND` — worth reading, not time-sensitive
 - `REFERENCE - SAVE FOR LATER` — archive for future use
 

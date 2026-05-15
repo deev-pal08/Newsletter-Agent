@@ -161,7 +161,7 @@ The `scan` command uses Claude Sonnet + web search to find new resources of any 
 # Interactive — review and pick which resources to add
 uv run newsletter scan
 
-# Preview only — see what it finds without changing config
+# Preview only — see what it finds without changing the database
 uv run newsletter scan --dry-run
 
 # Add everything automatically
@@ -221,6 +221,9 @@ All resources (RSS feeds, subreddits, and reference links) live in the SQLite da
 # Discover sources based on your profile (recommended for first setup)
 uv run newsletter scan
 
+# List all resources in the database
+uv run newsletter resources
+
 # Add a resource manually
 uv run newsletter add-resource --name "PortSwigger Research" \
   --url "https://portswigger.net/research" \
@@ -229,9 +232,6 @@ uv run newsletter add-resource --name "PortSwigger Research" \
 
 # Remove a resource by ID
 uv run newsletter remove-resource 42
-
-# Discover new resources via web search
-uv run newsletter scan
 ```
 
 On first run, the database is empty. Use `scan` to auto-discover sources based on your profile, or add them manually with `add-resource`.
