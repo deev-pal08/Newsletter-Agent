@@ -3,24 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from datetime import UTC, datetime, timedelta
 
 from newsletter_agent.config import AppConfig, load_about_me
+from newsletter_agent.cost_tracker import CostBreakdown
 from newsletter_agent.delivery.email import EmailDelivery
+from newsletter_agent.report import RunReport
 from newsletter_agent.delivery.templates import render_digest_html
 from newsletter_agent.models import Article, Digest, Priority
+from newsletter_agent.ranking.filter import filter_articles
 from newsletter_agent.ranking.ranker import ArticleRanker, BatchRanker
+from newsletter_agent.scanner import ArticleScanner
 from newsletter_agent.sources import get_enabled_sources
-from newsletter_agent.sources.web import (
-    WebSource,
-    collect_extraction_results,
-    submit_extraction_batch,
-)
 from newsletter_agent.state.store import StateStore
-from newsletter_agent.utils import titles_similar
+from newsletter_agent.utils import find_semantic_duplicates
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +31,8 @@ class Pipeline:
         self.about_me = load_about_me(config.about_me)
         self._ranker: ArticleRanker | None = None
         self.delivery: EmailDelivery | None = None
+        self.cost = CostBreakdown()
+        self.report = RunReport()
         if config.email.enabled and config.email.to_addresses:
             try:
                 self.delivery = EmailDelivery(
@@ -50,37 +50,51 @@ class Pipeline:
                 model=self.model,
                 api_key=self.config.llm.api_key,
                 max_batch_size=self.config.llm.max_articles_per_batch,
+                prompt_caching=self.config.llm.prompt_caching,
             )
         return self._ranker
 
-    def run_fetch(self) -> list[Article]:
-        """Fetch from all sources and deduplicate."""
-        since = datetime.now(UTC) - timedelta(hours=self.config.lookback_hours)
-        sources = get_enabled_sources(self.config, self.state)
-        logger.info("Fetching from %d sources...", len(sources))
-
-        all_articles = asyncio.run(self._fetch_all(sources, since))
-        new_articles = self._deduplicate(all_articles)
-
-        logger.info(
-            "Fetched %d total, %d new after dedup",
-            len(all_articles), len(new_articles),
-        )
-        self.state.save()
-        return new_articles
-
-    def run_digest(self, use_batch: bool = False) -> Digest:
-        """Fetch, rank, and build digest."""
+    def run_digest(self) -> Digest:
+        """Fetch, search web, rank, and build digest."""
+        self.cost = CostBreakdown()
+        self.report = RunReport()
         start = time.monotonic()
         since = datetime.now(UTC) - timedelta(hours=self.config.lookback_hours)
         sources = get_enabled_sources(self.config, self.state)
 
         logger.info("Fetching from %d sources...", len(sources))
-        all_articles = asyncio.run(self._fetch_all(sources, since))
-        new_articles = self._deduplicate(all_articles)
+        all_articles = asyncio.run(self._fetch_all(sources, since, self.report))
+
+        # Web article search via Tavily
+        scanner = ArticleScanner(self.config, about_me=self.about_me)
+        web_articles = scanner.search(report=self.report)
+        if web_articles:
+            logger.info("Tavily added %d articles", len(web_articles))
+            all_articles.extend(web_articles)
+            self.cost.add_tavily(
+                self.config.discovery.tavily_queries_per_scan,
+                self.config.discovery.search_depth,
+            )
+
+        new_articles = self._deduplicate(all_articles, self.report)
         logger.info("Fetched %d total, %d new", len(all_articles), len(new_articles))
 
         if new_articles:
+            # Filter: remove noise before expensive ranking
+            if self.config.filtering.enabled:
+                pre_filter = len(new_articles)
+                new_articles = filter_articles(
+                    new_articles,
+                    interests=self.config.interests,
+                    about_me=self.about_me,
+                    model=self.config.filtering.model,
+                    fail_open=self.config.filtering.fail_open,
+                    report=self.report,
+                )
+                self.cost.add_filter(pre_filter)
+
+            use_batch = self.config.llm.use_batch
+            self.report.ranking_mode = "batch" if use_batch else "sync"
             if use_batch:
                 ranked = self._rank_batch_api(new_articles)
             else:
@@ -91,6 +105,7 @@ class Pipeline:
                 ranked = self.ranker.rank_batch(
                     new_articles, self.config.interests, self.about_me,
                 )
+            self.cost.add_ranking(len(new_articles), self.model, batch=use_batch)
         else:
             ranked = []
 
@@ -110,166 +125,15 @@ class Pipeline:
         # Persist state
         for article in new_articles:
             self.state.mark_seen(article)
-        digest_id = self.state.save_digest(digest)
+        digest_id = self.state.save_digest(digest, cost_breakdown=self.cost.to_json())
         digest.digest_id = digest_id
         self.state.save()
 
         return digest
 
-    def run_batch_submit(self) -> str:
-        """Fetch, dedup, and submit articles for async batch ranking.
-        Returns the batch ID. Results are collected later with batch_collect().
-        """
-        since = datetime.now(UTC) - timedelta(hours=self.config.lookback_hours)
-        sources = get_enabled_sources(self.config, self.state)
-
-        # Enable deferred AI extraction on web sources
-        for source in sources:
-            if isinstance(source, WebSource):
-                source.defer_ai = True
-
-        logger.info("Fetching from %d sources...", len(sources))
-        all_articles = asyncio.run(self._fetch_all(sources, since))
-        new_articles = self._deduplicate(all_articles)
-        logger.info("Fetched %d total, %d new", len(all_articles), len(new_articles))
-
-        if not new_articles:
-            logger.info("No new articles to rank")
-            return ""
-
-        batch_ranker = BatchRanker(
-            model=self.model,
-            api_key=self.config.llm.api_key,
-            max_batch_size=self.config.llm.max_articles_per_batch,
-        )
-        batch_id = batch_ranker.submit(
-            new_articles, self.config.interests, self.about_me,
-        )
-
-        # Submit web extraction batch if any pages need AI
-        pending = []
-        for source in sources:
-            if isinstance(source, WebSource):
-                pending.extend(source.pending_extractions)
-
-        extraction_batch_id = ""
-        if pending:
-            try:
-                extraction_batch_id = submit_extraction_batch(
-                    pending, self.config.llm.api_key,
-                )
-                self.state._set_meta(
-                    "extraction_batch_id", extraction_batch_id,
-                )
-                self.state._set_meta(
-                    "extraction_pending",
-                    json.dumps(pending),
-                )
-            except Exception:
-                logger.exception("Failed to submit web extraction batch")
-
-        # Mark articles as seen now (they'll be ranked later)
-        for article in new_articles:
-            self.state.mark_seen(article)
-        self.state.save()
-
-        # Save batch job so we can collect results later
-        self.state.save_batch_job(batch_id, new_articles, self.config.interests)
-        logger.info("Batch %s submitted with %d articles", batch_id, len(new_articles))
-        if extraction_batch_id:
-            logger.info(
-                "Extraction batch %s submitted with %d pages",
-                extraction_batch_id, len(pending),
-            )
-        return batch_id
-
-    def run_batch_collect(self, batch_id: str | None = None) -> Digest | None:
-        """Check a pending batch and build digest if results are ready."""
-        if batch_id is None:
-            pending = self.state.get_pending_batch()
-            if not pending:
-                logger.info("No pending batch jobs")
-                return None
-            batch_id = pending["batch_id"]
-
-        batch_ranker = BatchRanker(
-            model=self.model,
-            api_key=self.config.llm.api_key,
-            max_batch_size=self.config.llm.max_articles_per_batch,
-        )
-
-        status = batch_ranker.check_status(batch_id)
-        logger.info("Batch %s status: %s", batch_id, status)
-
-        if status != "ended":
-            if status in ("canceled", "expired"):
-                self.state.update_batch_status(batch_id, status)
-            return None
-
-        articles = self.state.get_batch_articles(batch_id)
-        ranked = batch_ranker.collect_results(batch_id, articles)
-
-        # Collect web extraction results if a batch was submitted
-        extraction_batch_id = self.state._get_meta("extraction_batch_id")
-        if extraction_batch_id:
-            try:
-                ext_status = batch_ranker.check_status(extraction_batch_id)
-                if ext_status == "ended":
-                    pending_json = self.state._get_meta("extraction_pending") or "[]"
-                    pending_meta = json.loads(pending_json)
-                    since = datetime.now(UTC) - timedelta(
-                        hours=self.config.lookback_hours,
-                    )
-                    extracted = collect_extraction_results(
-                        extraction_batch_id, pending_meta,
-                        self.config.llm.api_key, since,
-                    )
-                    # Deduplicate extracted articles against ranked ones
-                    ranked_urls = {a.normalized_url for a in ranked}
-                    for a in extracted:
-                        if a.normalized_url not in ranked_urls:
-                            a.priority = Priority.REFERENCE
-                            a.ai_summary = "Extracted via web AI (unranked)"
-                            ranked.append(a)
-                            self.state.mark_seen(a)
-                    logger.info(
-                        "Added %d articles from web extraction batch",
-                        len(extracted),
-                    )
-                else:
-                    logger.warning(
-                        "Web extraction batch %s not ready: %s",
-                        extraction_batch_id, ext_status,
-                    )
-            except Exception:
-                logger.exception("Failed to collect web extraction results")
-            finally:
-                self.state._set_meta("extraction_batch_id", "")
-                self.state._set_meta("extraction_pending", "")
-
-        ranked.sort(
-            key=lambda a: list(Priority).index(a.priority) if a.priority else 99,
-        )
-
-        digest = Digest(
-            date=datetime.now(UTC),
-            articles=ranked,
-            sources_used=[],
-            total_fetched=len(articles),
-            total_after_dedup=len(articles),
-            generation_time_seconds=0,
-        )
-
-        digest_id = self.state.save_digest(digest)
-        digest.digest_id = digest_id
-        self.state.update_batch_status(batch_id, "ended")
-        self.state.save()
-
-        return digest
-
-    def run_send(self, dry_run: bool = False, use_batch: bool = False) -> Digest:
-        """Full pipeline: fetch, rank, format, deliver."""
-        digest = self.run_digest(use_batch=use_batch)
+    def run_send(self, dry_run: bool = False) -> Digest:
+        """Full pipeline: fetch, search web, rank, format, deliver."""
+        digest = self.run_digest()
 
         if dry_run:
             html = render_digest_html(digest)
@@ -277,15 +141,22 @@ class Pipeline:
             with open(out, "w") as f:
                 f.write(html)
             logger.info("Dry run: HTML saved to %s", out)
+            self.report.delivery_skipped = "dry run"
         elif self.delivery:
-            email_id = self.delivery.send_digest(digest)
-            digest.email_sent = True
-            digest.email_id = email_id
-            if digest.digest_id:
-                self.state.update_digest_email(digest.digest_id, email_id)
-            logger.info("Digest sent (email_id=%s)", email_id)
+            try:
+                email_id = self.delivery.send_digest(digest)
+                digest.email_sent = True
+                digest.email_id = email_id
+                if digest.digest_id:
+                    self.state.update_digest_email(digest.digest_id, email_id)
+                logger.info("Digest sent (email_id=%s)", email_id)
+                self.report.delivery_ok = True
+            except Exception as e:
+                logger.error("Email delivery failed: %s", e)
+                self.report.delivery_error = str(e)
         else:
             logger.warning("Email delivery not configured, skipping send")
+            self.report.delivery_skipped = "not configured"
 
         return digest
 
@@ -295,6 +166,7 @@ class Pipeline:
             model=self.model,
             api_key=self.config.llm.api_key,
             max_batch_size=self.config.llm.max_articles_per_batch,
+            prompt_caching=self.config.llm.prompt_caching,
         )
         logger.info(
             "Ranking %d articles with %s via Batch API (50%% cheaper)...",
@@ -306,6 +178,7 @@ class Pipeline:
 
     async def _fetch_all(
         self, sources: list, since: datetime,  # type: ignore[type-arg]
+        report: RunReport | None = None,
     ) -> list[Article]:
         # Filter out unhealthy sources
         healthy_sources = []
@@ -319,10 +192,15 @@ class Pipeline:
                     "Skipping '%s': disabled after %d consecutive failures",
                     source.name, max_fail,
                 )
+                if report is not None:
+                    report.add_source_skipped(
+                        source.name,
+                        f"disabled after {max_fail} consecutive failures",
+                    )
                 continue
             healthy_sources.append(source)
 
-        tasks = [source.fetch(since=since) for source in healthy_sources]
+        tasks = [source.fetch(since=since, report=report) for source in healthy_sources]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         articles: list[Article] = []
         for source, result in zip(healthy_sources, results, strict=True):
@@ -331,6 +209,8 @@ class Pipeline:
                 self.state.update_source_meta(
                     source.source_id, success=False, error=str(result),
                 )
+                if report is not None:
+                    report.add_source_failed(source.name, str(result))
             else:
                 articles.extend(result)
                 self.state.update_source_meta(
@@ -339,31 +219,66 @@ class Pipeline:
                     articles_fetched=len(result),
                 )
                 logger.info("  %s: %d articles", source.name, len(result))
+                if report is not None:
+                    report.add_source_ok(source.name, len(result))
         return articles
 
-    def _deduplicate(self, articles: list[Article]) -> list[Article]:
+    def _deduplicate(
+        self, articles: list[Article], report: RunReport | None = None,
+    ) -> list[Article]:
         seen_normalized: set[str] = set()
         new: list[Article] = []
-        threshold = self.config.dedup.title_similarity_threshold
 
         for article in articles:
             norm = article.normalized_url
-            # Check normalized URL against in-batch and historical state
             if norm in seen_normalized or self.state.is_seen_normalized(norm):
                 continue
 
-            # Check exact title fingerprint in DB
             if article.title_fp and self.state.find_similar_title(article.title_fp):
-                continue
-
-            # Check title similarity against current batch
-            if self.config.dedup.fuzzy_url and any(
-                titles_similar(article.title, existing.title, threshold)
-                for existing in new
-                if article.source_id != existing.source_id
-            ):
                 continue
 
             seen_normalized.add(norm)
             new.append(article)
+
+        dedup_by_url = len(articles) - len(new)
+
+        # Semantic dedup pass (cross-source, within current batch)
+        if self.config.dedup.use_semantic and len(new) >= 2:
+            try:
+                import os
+                if os.environ.get("OPENAI_API_KEY"):
+                    titles = [a.title for a in new]
+                    dup_indices = find_semantic_duplicates(
+                        titles,
+                        threshold=self.config.dedup.semantic_threshold,
+                        model=self.config.dedup.embedding_model,
+                        state_store=self.state,
+                        cache_enabled=self.config.dedup.cache_embeddings,
+                    )
+                    if dup_indices:
+                        before = len(new)
+                        new = [a for i, a in enumerate(new) if i not in dup_indices]
+                        semantic_removed = before - len(new)
+                        logger.info(
+                            "Semantic dedup removed %d articles", semantic_removed,
+                        )
+                        if report is not None:
+                            report.dedup_semantic = True
+                            report.dedup_removed = dedup_by_url + semantic_removed
+                    elif report is not None:
+                        report.dedup_semantic = True
+                        report.dedup_removed = dedup_by_url
+                else:
+                    logger.info("OPENAI_API_KEY not set — using title similarity dedup")
+                    if report is not None:
+                        report.dedup_fallback = True
+                        report.dedup_removed = dedup_by_url
+            except Exception:
+                logger.warning("Semantic dedup failed, falling back to difflib", exc_info=True)
+                if report is not None:
+                    report.dedup_fallback = True
+                    report.dedup_removed = dedup_by_url
+        elif report is not None:
+            report.dedup_removed = dedup_by_url
+
         return new

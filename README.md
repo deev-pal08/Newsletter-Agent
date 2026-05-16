@@ -1,17 +1,17 @@
 # Newsletter Agent
 
-Personalized research intelligence agent. Monitors curated sources, discovers new ones via web search, uses Claude to filter signal from noise, and delivers a prioritized daily digest via email.
+Personalized research intelligence agent. Monitors curated sources, discovers fresh articles via web search, uses Claude to rank signal from noise, and delivers a prioritized daily digest via email.
 
 ## What It Does
 
 1. **Profiles** you via `AboutMe.md` — your skills, experience, and learning goals
-2. **Fetches** from 8 source types: RSS blogs, arXiv papers, Hacker News, GitHub Trending, Reddit, HackerOne disclosures, oss-security mailing list, and conference proceedings
-3. **Discovers** new resources via `scan` — Claude + web search finds blogs, YouTube channels, podcasts, newsletters, courses, tools, communities, and anything else relevant to your profile
-4. **Deduplicates** using URL normalization, title fingerprinting, and cross-source fuzzy matching
-5. **Ranks** using Claude AI into four priority levels: Critical, Important, Interesting, Reference — personalized to your profile
-6. **Delivers** a formatted HTML email via Resend
-7. **Tracks** source health, digest history, and seen articles in SQLite
-8. **Extracts** articles from any webpage — JSON APIs, RSS autodiscovery, HTML structure, or AI fallback
+2. **Fetches** from 3 DB-driven source types: RSS feeds, Reddit subreddits, and web pages (with AI-assisted extraction)
+3. **Searches** the web via Tavily for fresh articles, CVEs, research papers, and reports matching your profile
+4. **Deduplicates** in two stages: DB history check (URL + title fingerprint), then OpenAI semantic embeddings for cross-source live dedup
+5. **Filters** noise via DeepSeek relevance filter (batched, fail-open)
+6. **Ranks** using Claude AI into four priority levels: Critical, Important, Interesting, Reference — personalized to your profile
+7. **Delivers** a formatted HTML email via Resend with cost breakdown and health report
+8. **Reports** per-run health: source/feed/API success and failure summary after every command
 
 ## Prerequisites
 
@@ -44,19 +44,18 @@ cp config.example.yaml config.yaml
 
 # 6. Set up API keys
 cp .env.example .env
-# Edit .env — paste your Anthropic and Resend API keys
+# Edit .env — paste your API keys (auto-loaded via python-dotenv)
 
-# 7. Add your sources (the DB starts empty — pick one approach)
-# Option A: Discover sources automatically via web search
-uv run newsletter scan
-# Option B: Add sources manually
-uv run newsletter add-resource --name "My Blog" \
-  --url "https://example.com" \
-  --feed-url "https://example.com/rss" \
+# 7. Add your sources (the DB starts empty)
+uv run newsletter add-resource --name "PortSwigger Research" \
+  --url "https://portswigger.net/research" \
+  --feed-url "https://portswigger.net/research/rss" \
   --type blog
+uv run newsletter add-resource --name "SonarSource Blog" \
+  --url "https://www.sonarsource.com/blog/" --type web
 
 # 8. Test a source
-uv run newsletter test-source hackernews
+uv run newsletter test-source rss
 
 # 9. Preview a full ranked digest (requires Anthropic key)
 uv run newsletter send --dry-run
@@ -64,8 +63,8 @@ uv run newsletter send --dry-run
 # 10. Send for real (requires both keys)
 uv run newsletter send
 
-# 11. (Optional) Install daily schedule with Batch API (50% cheaper)
-uv run newsletter install-schedule --batch --submit-time 23:00 --time 08:00
+# 11. (Optional) Install daily schedule
+uv run newsletter install-schedule --time 08:00
 ```
 
 ## Configuration
@@ -74,67 +73,46 @@ Copy `config.example.yaml` to `config.yaml` and customize:
 
 - **about_me**: Path to your `AboutMe.md` profile (default: `AboutMe.md`)
 - **interests**: Your research focus areas (used by Claude for ranking)
-- **sources**: Toggle source types on/off (RSS, arXiv, HN, GitHub, Reddit, etc.)
+- **sources**: Toggle source types on/off (rss, reddit, web)
 - **llm.model**: `claude-haiku-4-5` (cheap) or `claude-sonnet-4-6` (better)
+- **llm.use_batch**: Use Batch API for 50% cheaper ranking (default: true)
 - **email**: Resend delivery settings
-- **dedup**: Fuzzy URL matching and title similarity threshold
+- **dedup**: Semantic dedup threshold and embedding model
 - **health**: Auto-disable failing sources, retry cooldown
-- **schedule**: Daily digest time and timezone
 
-RSS feeds, subreddits, and other resources are managed in the SQLite database — use the CLI commands below to add, remove, and list them.
+RSS feeds, subreddits, and web pages are managed in the SQLite database — use the CLI commands below to add, remove, and list them.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `newsletter send` | Full pipeline: fetch, rank, email |
+| `newsletter send` | Full pipeline: fetch, search, dedup, filter, rank, email |
 | `newsletter send --dry-run` | Generate HTML without sending |
-| `newsletter send --batch` | Same as send, but 50% cheaper via Batch API |
-| `newsletter digest` | Fetch + rank, print to terminal |
-| `newsletter digest --batch` | Same as digest, using Batch API |
-| `newsletter fetch` | Fetch only, print summary |
-| `newsletter scan` | Discover new resources via web search |
-| `newsletter scan --dry-run` | Preview discoveries without adding |
-| `newsletter scan --auto` | Auto-add all discovered resources |
+| `newsletter send -m claude-sonnet-4-6` | Use a specific model for ranking |
 | `newsletter resources` | List all resources in the database |
 | `newsletter add-resource` | Add a resource to the database |
 | `newsletter remove-resource <ID>` | Remove a resource from the database |
-| `newsletter test-source <id>` | Debug a single source |
+| `newsletter test-source <id>` | Debug a single source (rss, reddit, web) |
 | `newsletter sources` | Show source status and health |
 | `newsletter status` | Show system state (SQLite backend) |
 | `newsletter history` | Browse past digests |
 | `newsletter history --detail <ID>` | View a specific past digest |
-| `newsletter batch-submit` | Submit articles for async batch ranking |
-| `newsletter batch-collect` | Collect results from a pending batch job |
-| `newsletter batch-collect --send-email` | Collect results and send digest email |
 | `newsletter install-schedule` | Install daily schedule |
-| `newsletter install-schedule --batch` | Install async batch schedule (50% cheaper) |
 | `newsletter install-schedule --uninstall` | Remove installed schedule |
 | `newsletter re-enable <source>` | Reset error count for a source |
 
-## Batch API (50% Cheaper)
+## Environment Variables
 
-The Claude Batch API processes requests asynchronously at half the cost. Two ways to use it:
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | Yes | Claude API for ranking and web source AI fallback |
+| `RESEND_API_KEY` | Yes (for email) | Resend API for delivery |
+| `TAVILY_API_KEY` | Optional | Tavily Search for web article discovery |
+| `OPENAI_API_KEY` | Optional | OpenAI embeddings for semantic dedup |
+| `DEEPSEEK_API_KEY` | Optional | DeepSeek for pre-ranking relevance filter |
+| `FIRECRAWL_API_KEY` | Optional | Firecrawl for web page extraction (1000 free credits/month) |
 
-**Inline mode** — add `--batch` to any command (waits for results, up to 60 min):
-```bash
-uv run newsletter send --batch --dry-run
-```
-
-**Async mode** — submit at night, collect in the morning:
-```bash
-# Step 1: Submit (returns immediately)
-uv run newsletter batch-submit
-
-# Step 2: Collect when ready
-uv run newsletter batch-collect --send-email
-```
-
-**Automated async schedule** — set it and forget it:
-```bash
-uv run newsletter install-schedule --batch --submit-time 23:00 --time 08:00
-```
-This creates two daily jobs: submit at 11 PM, collect and email at 8 AM. Both ranking and web AI extraction are batched at 50% off.
+All keys are stored in `.env` (gitignored) and auto-loaded via python-dotenv. Optional services degrade gracefully when their keys are not set.
 
 ## User Profile (AboutMe.md)
 
@@ -154,27 +132,7 @@ Sections:
 
 The profile is injected into Claude's ranking prompts, so articles are prioritized based on your actual background and goals — not just keyword matching.
 
-## Source Discovery (scan)
-
-The `scan` command uses Claude Sonnet + web search to find new resources of any kind based on your profile:
-
-```bash
-# Interactive — review and pick which resources to add
-uv run newsletter scan
-
-# Preview only — see what it finds without changing the database
-uv run newsletter scan --dry-run
-
-# Add everything automatically
-uv run newsletter scan --auto
-```
-
-It finds blogs (with RSS feeds), YouTube channels, podcasts, newsletters, courses, forums, communities, tools, and anything else relevant to your interests. Discovered resources are saved to the database and routed intelligently:
-- Blogs with RSS feeds → `source_type='rss'` (auto-fetched daily)
-- Subreddits → `source_type='reddit'` (auto-fetched daily)
-- Everything else → reference only (stored for your records, not auto-fetched)
-
-### Web Source (any webpage)
+## Web Source (Any Webpage)
 
 For sites that don't have RSS feeds, add them as `web` resources:
 
@@ -189,60 +147,70 @@ The web source uses a tiered extraction strategy — it tries each method in ord
 |----------|--------|------|---------------|
 | 1. JSON API | Parse structured JSON | Free | Sites with API endpoints (e.g., BugBoard) |
 | 2. RSS autodiscovery | Find linked feeds in HTML | Free | Sites with hidden RSS feeds |
-| 3. HTML structure | Extract from `<article>` tags, heading patterns | Free | Most standard blogs |
-| 4. AI fallback | Claude Haiku extracts articles from page text | ~$0.01/page | JavaScript SPAs, unusual layouts |
+| 3. Jina Reader | Markdown extraction via Jina | Free | Most standard pages |
+| 4. Firecrawl | Firecrawl API extraction | ~credits | Complex JavaScript sites |
+| 5. HTML structure | Extract from `<article>` tags | Free | Standard blogs |
+| 6. AI fallback | Claude Haiku extracts from page | ~$0.01/page | Unusual layouts, SPAs |
 
-AI is only used as a last resort — most sites are handled deterministically at zero cost.
+Deterministic methods are tried first; AI is only used as a last resort.
 
-Run it whenever you want to expand your sources — it's not part of the daily pipeline.
+## Pipeline Stages
+
+1. **Deterministic fetch** — RSS feeds, Reddit subreddits, web pages (all DB-driven)
+2. **Web article search** — Tavily searches for fresh articles matching profile/interests
+3. **Deduplication** — Two stages: DB history (URL + title fingerprint) removes previously seen articles, then OpenAI semantic embeddings catch cross-source duplicates in the live batch
+4. **Relevance filtering** — DeepSeek binary filter removes noise (batched at 100/call, fail-open)
+5. **Ranking** — Claude ranks and summarizes remaining articles (Batch API by default, 50% cheaper)
+6. **Digest** — HTML email via Resend with cost breakdown and health report
+
+## Run Health Report
+
+Every `send` and `test-source` command prints a health report:
+
+```
+--- Run Health ---
+  Sources:   3 OK (RSS Feeds: 511, Reddit: 41, Web Pages: 641)
+  Warnings:
+    - Web "BugBoard": no articles found
+  Discovery: 2/2 Tavily queries OK, 18 articles
+  Filter:    32 kept, 3 removed
+  Ranking:   OK (batch)
+  Dedup:     semantic, removed 1176
+  Delivery:  sent
+```
+
+Shows per-source/feed/page results, API failures, filter stats, dedup strategy, and delivery status.
 
 ## Scheduling
 
 Install a daily schedule with one command. Works on all platforms:
 
-| OS | Method | Created by |
-|----|--------|------------|
-| macOS | LaunchAgent (plist) | `launchctl load` |
-| Linux | crontab | `crontab -` |
-| Windows | Task Scheduler | `schtasks /Create` |
+| OS | Method |
+|----|--------|
+| macOS | LaunchAgent (plist) via `launchctl` |
+| Linux | crontab |
+| Windows | Task Scheduler |
 
 ```bash
-# Standard mode (full-price, instant ranking)
 uv run newsletter install-schedule --time 08:00
-
-# Batch mode (50% cheaper, async overnight)
-uv run newsletter install-schedule --batch --submit-time 23:00 --time 08:00
-
-# Remove schedule
 uv run newsletter install-schedule --uninstall
-
-# Verify (macOS)
-launchctl list | grep newsletter
 ```
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Claude API key for ranking, scanning, and web AI fallback |
-| `RESEND_API_KEY` | Yes (for email) | Resend API key for delivery |
 
 ## Cost
 
-| Model | Per run | Monthly (daily) | With Batch API |
-|-------|---------|-----------------|----------------|
-| Claude Haiku (default) | ~$0.045 | ~$1.35/month | ~$0.68/month |
-| Claude Sonnet | ~$0.135 | ~$4.05/month | ~$2.03/month |
+| Model | Per run | Monthly (daily) |
+|-------|---------|-----------------|
+| Claude Haiku (default, Batch API) | ~$0.07 | ~$2.00/month |
+| Claude Sonnet (Batch API) | ~$0.14 | ~$4.20/month |
+
+Includes Tavily search ($0.03), DeepSeek filter ($0.03), and OpenAI embeddings ($0.001). Actual cost depends on article volume.
 
 ## Resource Management
 
-All resources (RSS feeds, subreddits, web pages, and reference links) live in the SQLite database. The database starts empty — add sources yourself or let `scan` discover them for you.
+All resources live in the SQLite database. The database starts empty — add sources manually.
 
 ```bash
-# Discover sources based on your profile (recommended for first setup)
-uv run newsletter scan
-
-# List all resources in the database
+# List all resources
 uv run newsletter resources
 
 # Add an RSS feed
@@ -251,7 +219,11 @@ uv run newsletter add-resource --name "PortSwigger Research" \
   --feed-url "https://portswigger.net/research/rss" \
   --type blog
 
-# Add a web page (auto-extracted via JSON/RSS/HTML/AI)
+# Add a subreddit
+uv run newsletter add-resource --name "r/netsec" \
+  --url "https://reddit.com/r/netsec" --type subreddit
+
+# Add a web page (auto-extracted via JSON/RSS/Jina/Firecrawl/HTML/AI)
 uv run newsletter add-resource --name "SonarSource Blog" \
   --url "https://www.sonarsource.com/blog/" --type web
 
@@ -259,52 +231,57 @@ uv run newsletter add-resource --name "SonarSource Blog" \
 uv run newsletter remove-resource 42
 ```
 
-On first run, the database is empty. Use `scan` to auto-discover sources based on your profile, or add them manually with `add-resource`.
-
 ## Sources
 
 | Source | Method | API Key Required |
 |--------|--------|-----------------|
-| RSS feeds (from database) | RSS/Atom feeds | No |
-| arXiv | Public API | No |
-| Hacker News | Firebase API | No |
-| GitHub Trending | HTML scraping | No |
-| Reddit (subreddits from database) | Public RSS | No |
-| Web pages (from database) | JSON/RSS/HTML/AI extraction | No (AI fallback uses Anthropic key) |
-| oss-security | Web scraping | No |
-| HackerOne | GraphQL (experimental) | No |
-| Conferences | Web scraping | No |
+| RSS feeds (from database) | RSS/Atom feeds via feedparser | No |
+| Reddit (subreddits from database) | Public RSS feeds | No |
+| Web pages (from database) | JSON → RSS → Jina → Firecrawl → HTML → AI | No (AI fallback uses Anthropic key) |
 
 ## Project Structure
 
 ```
 src/newsletter_agent/
-├── cli.py              # Click CLI (15 commands)
+├── cli.py              # Click CLI
 ├── config.py           # Pydantic config
 ├── models.py           # Article, Priority, Digest, SourceHealth
-├── pipeline.py         # Orchestrator (fetch → dedup → rank → deliver)
-├── scanner.py          # Source discovery (Claude + web search)
-├── utils.py            # URL normalization, title similarity
+├── pipeline.py         # Orchestrator (fetch → dedup → filter → rank → deliver)
+├── report.py           # RunReport — per-run health report
+├── scanner.py          # Web article search via Tavily
+├── cost_tracker.py     # Per-run cost estimation
+├── utils.py            # URL normalization, semantic dedup
 ├── scheduling.py       # LaunchAgent / crontab / Task Scheduler
-├── sources/            # Source plugins (one per file, incl. web.py)
-├── ranking/            # Claude API ranking (sync + batch)
-├── delivery/           # Resend email + templates
-└── state/              # SQLite persistence + resource database
+├── sources/
+│   ├── base.py         # BaseSource abstract class
+│   ├── rss.py          # RSS/Atom feed source
+│   ├── reddit.py       # Reddit source (public RSS)
+│   └── web.py          # Web source (tiered extraction)
+├── ranking/
+│   ├── ranker.py       # Claude API ranking (sync + batch)
+│   └── filter.py       # DeepSeek relevance filter
+├── delivery/
+│   ├── email.py        # Resend email delivery
+│   └── templates.py    # HTML digest templates
+└── state/
+    └── store.py        # SQLite persistence + resource database
 ```
 
-## v2 Features
+## Key Features
 
-- **SQLite state**: Replaced JSON with SQLite (WAL mode). Auto-migrates from v1 `state.json` on first run.
-- **Fuzzy dedup**: URL normalization (strips tracking params, www, trailing slash), title fingerprinting, cross-source title similarity matching (85% threshold).
-- **Source health monitoring**: Auto-disables sources after 3 consecutive failures, retries after 24h cooldown. Use `re-enable` to reset manually.
-- **Digest history**: Browse past digests with `--since`, `--until`, `--search`, and `--detail` options.
-- **Batch API**: 50% cheaper ranking via Claude's Batch API. Supports inline (`--batch` flag) and async (`batch-submit` / `batch-collect`) modes. In async mode, web AI extraction is also batched for additional savings.
-- **Cross-platform scheduling**: Install daily jobs on macOS (launchd), Linux (cron), or Windows (Task Scheduler). Supports both sync and async batch modes.
-- **User profile**: `AboutMe.md` personalizes ranking and source discovery based on your background, skills, and learning goals. Works for any domain — security, baking, design, finance, anything.
-- **Source scanner**: `scan` command uses Claude Sonnet + web search to discover blogs, YouTube channels, podcasts, newsletters, courses, tools, communities, and any other resources matching your profile.
-- **DB-backed resources**: All RSS feeds, subreddits, web pages, and discovered resources are stored in SQLite. No hardcoded URLs — the database starts empty and users populate it via `scan` or `add-resource`.
-- **Web source (AI-assisted)**: Generic `source_type='web'` extracts articles from any webpage using a tiered strategy: JSON API → RSS autodiscovery → HTML structure → Claude Haiku AI fallback. Deterministic methods are tried first; AI is only used when they fail. In async batch mode, AI extraction is deferred and submitted via Batch API for 50% savings.
-- **Permanent article history**: The `seen_articles` table is never pruned, serving as both a dedup index and a permanent read history of every article ever processed.
+- **3 DB-driven source types**: RSS, Reddit, Web — no hardcoded sources, everything lives in SQLite
+- **Tiered web extraction**: JSON API → RSS autodiscovery → Jina Reader → Firecrawl → HTML → Claude AI fallback
+- **Two-stage dedup**: DB history removes previously seen articles, OpenAI semantic embeddings catch cross-source duplicates in the live batch
+- **Relevance filtering**: DeepSeek binary filter removes noise before expensive Claude ranking (batched at 100/call)
+- **Batch API ranking**: 50% cheaper via Claude Batch API (default mode)
+- **Run health report**: Every command prints source/feed/API success and failure summary
+- **Source health monitoring**: Auto-disables sources after 3 consecutive failures, 24h retry cooldown
+- **Digest history**: Browse past digests with search, date filters, and detail view
+- **Cost tracking**: Per-run cost estimates (Tavily + DeepSeek + Claude + OpenAI) stored with each digest
+- **User profile**: AboutMe.md drives personalized ranking and article search
+- **Permanent article history**: `seen_articles` table is never pruned — full read history
+- **Auto-load .env**: python-dotenv loads API keys automatically
+- **Cross-platform scheduling**: Daily jobs on macOS (launchd), Linux (cron), Windows (Task Scheduler)
 
 ## Adding a New Source
 
@@ -312,6 +289,7 @@ src/newsletter_agent/
 2. Register in `sources/__init__.py` SOURCE_REGISTRY
 3. Add config toggle in `config.py` SourcesConfig
 4. Wire up instantiation in `sources/__init__.py` `instantiate_source()`
+5. Add tests in `tests/sources/test_my_source.py`
 
 ## License
 

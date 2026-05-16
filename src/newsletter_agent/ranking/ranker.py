@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from typing import Any
 
 import anthropic
 
@@ -73,7 +74,7 @@ def parse_rankings(text: str) -> list[dict[str, str]]:
     try:
         result = json.loads(text)
         if isinstance(result, list):
-            return result  # type: ignore[no-any-return]
+            return result
     except json.JSONDecodeError:
         logger.warning("Failed to parse ranking response as JSON")
 
@@ -88,7 +89,9 @@ def apply_rankings(articles: list[Article], rankings: list[dict[str, str]]) -> l
             priority_str = ranking.get("priority", "REFERENCE_SAVE_FOR_LATER")
             article.priority = PRIORITY_MAP.get(priority_str, Priority.REFERENCE)
             article.ai_summary = ranking.get("summary", "")
-            article.tags = ranking.get("tags", article.tags)
+            tags = ranking.get("tags")
+            if isinstance(tags, list):
+                article.tags = tags
         else:
             article.priority = Priority.REFERENCE
             article.ai_summary = "Not ranked by AI"
@@ -101,11 +104,14 @@ class ArticleRanker:
         model: str = "claude-haiku-4-5",
         api_key: str | None = None,
         max_batch_size: int = 100,
+        prompt_caching: bool = True,
     ):
         self.model = model
         self.max_batch_size = max_batch_size
+        self.prompt_caching = prompt_caching
         self.client = anthropic.Anthropic(
             api_key=api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
+            base_url="https://api.anthropic.com",
         )
 
     def rank_batch(
@@ -133,12 +139,27 @@ class ArticleRanker:
         user_prompt = _build_user_prompt(articles, user_interests, user_profile)
 
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=16384,
-                system=RANKING_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_prompt}],
-            )
+            if self.prompt_caching:
+                system_block: list[dict[str, object]] = [
+                    {
+                        "type": "text",
+                        "text": RANKING_SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                ]
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=16384,
+                    system=system_block,  # type: ignore[arg-type]
+                    messages=[{"role": "user", "content": user_prompt}],
+                )
+            else:
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=16384,
+                    system=RANKING_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": user_prompt}],
+                )
             response_text = response.content[0].text  # type: ignore[union-attr]
             rankings = parse_rankings(response_text)
         except Exception:
@@ -159,11 +180,14 @@ class BatchRanker:
         model: str = "claude-haiku-4-5",
         api_key: str | None = None,
         max_batch_size: int = 100,
+        prompt_caching: bool = True,
     ):
         self.model = model
         self.max_batch_size = max_batch_size
+        self.prompt_caching = prompt_caching
         self.client = anthropic.Anthropic(
             api_key=api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
+            base_url="https://api.anthropic.com",
         )
 
     def submit(
@@ -173,6 +197,17 @@ class BatchRanker:
         user_profile: str = "",
     ) -> str:
         """Submit articles for batch ranking. Returns the batch ID."""
+        if self.prompt_caching:
+            system_value: Any = [
+                {
+                    "type": "text",
+                    "text": RANKING_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ]
+        else:
+            system_value = RANKING_SYSTEM_PROMPT
+
         requests = []
         for i in range(0, len(articles), self.max_batch_size):
             chunk = articles[i : i + self.max_batch_size]
@@ -182,12 +217,12 @@ class BatchRanker:
                 "params": {
                     "model": self.model,
                     "max_tokens": 16384,
-                    "system": RANKING_SYSTEM_PROMPT,
+                    "system": system_value,
                     "messages": [{"role": "user", "content": user_prompt}],
                 },
             })
 
-        batch = self.client.messages.batches.create(requests=requests)
+        batch = self.client.messages.batches.create(requests=requests)  # type: ignore[arg-type]
         logger.info("Batch submitted: %s (%d requests)", batch.id, len(requests))
         return batch.id
 

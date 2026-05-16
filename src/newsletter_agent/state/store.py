@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from newsletter_agent.models import Article, Digest, SourceHealth
+from newsletter_agent.models import Article, Digest
 from newsletter_agent.utils import normalize_url, title_fingerprint
 
 SCHEMA_VERSION = 3
@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS digests (
     generation_time_seconds REAL,
     email_sent INTEGER DEFAULT 0,
     email_id TEXT,
-    articles_json TEXT
+    articles_json TEXT,
+    cost_breakdown TEXT
 );
 
 CREATE TABLE IF NOT EXISTS batch_jobs (
@@ -75,6 +76,12 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS embeddings (
+    content_hash TEXT PRIMARY KEY,
+    embedding BLOB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_seen_normalized ON seen_articles(normalized_url);
 CREATE INDEX IF NOT EXISTS idx_seen_fingerprint ON seen_articles(title_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_digests_date ON digests(date);
@@ -100,7 +107,16 @@ class StateStore:
 
     def _init_db(self) -> None:
         self._conn.executescript(CREATE_TABLES)
+        self._migrate_schema()
         self._conn.commit()
+
+    def _migrate_schema(self) -> None:
+        cursor = self._conn.execute("PRAGMA table_info(digests)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "cost_breakdown" not in columns:
+            self._conn.execute(
+                "ALTER TABLE digests ADD COLUMN cost_breakdown TEXT",
+            )
 
     # --- Resources ---
 
@@ -176,38 +192,11 @@ class StateStore:
         self._conn.commit()
         return cursor.rowcount > 0
 
-    def enable_resource(self, resource_id: int) -> bool:
-        cursor = self._conn.execute(
-            "UPDATE resources SET enabled = 1 WHERE id = ?", (resource_id,),
-        )
-        self._conn.commit()
-        return cursor.rowcount > 0
-
-    def disable_resource(self, resource_id: int) -> bool:
-        cursor = self._conn.execute(
-            "UPDATE resources SET enabled = 0 WHERE id = ?", (resource_id,),
-        )
-        self._conn.commit()
-        return cursor.rowcount > 0
-
-    def resource_url_exists(self, url: str) -> bool:
-        row = self._conn.execute(
-            "SELECT 1 FROM resources WHERE url = ?", (url,),
-        ).fetchone()
-        return row is not None
-
     def resource_count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM resources").fetchone()
         return row[0] if row else 0
 
     # --- Seen articles (dedup) ---
-
-    def is_seen(self, url: str) -> bool:
-        row = self._conn.execute(
-            "SELECT 1 FROM seen_articles WHERE url = ? OR normalized_url = ?",
-            (url, normalize_url(url)),
-        ).fetchone()
-        return row is not None
 
     def is_seen_normalized(self, normalized: str) -> bool:
         row = self._conn.execute(
@@ -237,13 +226,6 @@ class StateStore:
                 datetime.now(UTC).isoformat(),
             ),
         )
-
-    def prune_seen(self, max_age_days: int = 30) -> int:
-        cutoff = (datetime.now(UTC) - timedelta(days=max_age_days)).isoformat()
-        cursor = self._conn.execute(
-            "DELETE FROM seen_articles WHERE first_seen < ?", (cutoff,),
-        )
-        return cursor.rowcount
 
     # --- Source health ---
 
@@ -301,21 +283,6 @@ class StateStore:
             return {}
         return dict(row)
 
-    def get_all_source_health(self) -> list[SourceHealth]:
-        rows = self._conn.execute("SELECT * FROM source_meta").fetchall()
-        result = []
-        for row in rows:
-            result.append(SourceHealth(
-                source_id=row["source_id"],
-                last_fetch=_parse_dt(row["last_fetch"]),
-                last_success=_parse_dt(row["last_success"]),
-                consecutive_errors=row["consecutive_errors"] or 0,
-                total_articles_fetched=row["total_articles_fetched"] or 0,
-                last_error=row["last_error"],
-                auto_disabled=bool(row["auto_disabled"]),
-            ))
-        return result
-
     def is_source_healthy(
         self, source_id: str, max_failures: int = 3, retry_after_hours: int = 24,
     ) -> bool:
@@ -344,12 +311,13 @@ class StateStore:
 
     # --- Digests ---
 
-    def save_digest(self, digest: Digest) -> int:
+    def save_digest(self, digest: Digest, cost_breakdown: str = "") -> int:
         cursor = self._conn.execute(
             """INSERT INTO digests
                (date, sources_used, total_fetched, total_after_dedup,
-                generation_time_seconds, email_sent, email_id, articles_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                generation_time_seconds, email_sent, email_id, articles_json,
+                cost_breakdown)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 digest.date.isoformat(),
                 json.dumps(digest.sources_used),
@@ -359,6 +327,7 @@ class StateStore:
                 1 if digest.email_sent else 0,
                 digest.email_id,
                 json.dumps([a.model_dump(mode="json") for a in digest.articles]),
+                cost_breakdown,
             ),
         )
         return cursor.lastrowid or 0
@@ -440,79 +409,22 @@ class StateStore:
             email_id=row["email_id"],
         )
 
-    # --- Batch jobs ---
-
-    def save_batch_job(
-        self,
-        batch_id: str,
-        articles: list[Article],
-        interests: list[str],
-    ) -> int:
-        now = datetime.now(UTC).isoformat()
-        cursor = self._conn.execute(
-            """INSERT INTO batch_jobs
-               (batch_id, status, created_at, articles_json, interests_json)
-               VALUES (?, 'submitted', ?, ?, ?)""",
-            (
-                batch_id,
-                now,
-                json.dumps([a.model_dump(mode="json") for a in articles]),
-                json.dumps(interests),
-            ),
-        )
-        self._conn.commit()
-        return cursor.lastrowid or 0
-
-    def get_pending_batch(self) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT * FROM batch_jobs WHERE status IN ('submitted', 'processing') "
-            "ORDER BY created_at DESC LIMIT 1",
-        ).fetchone()
-        return dict(row) if row else None
-
-    def update_batch_status(
-        self,
-        batch_id: str,
-        status: str,
-        error: str | None = None,
-    ) -> None:
-        now = datetime.now(UTC).isoformat()
-        self._conn.execute(
-            """UPDATE batch_jobs SET status = ?, completed_at = ?, error = ?
-               WHERE batch_id = ?""",
-            (status, now if status == "ended" else None, error, batch_id),
-        )
-        self._conn.commit()
-
-    def get_batch_articles(self, batch_id: str) -> list[Article]:
-        row = self._conn.execute(
-            "SELECT articles_json FROM batch_jobs WHERE batch_id = ?",
-            (batch_id,),
-        ).fetchone()
-        if not row:
-            return []
-        return [
-            Article.model_validate(a)
-            for a in json.loads(row["articles_json"] or "[]")
-        ]
-
-    def get_batch_interests(self, batch_id: str) -> list[str]:
-        row = self._conn.execute(
-            "SELECT interests_json FROM batch_jobs WHERE batch_id = ?",
-            (batch_id,),
-        ).fetchone()
-        if not row:
-            return []
-        return json.loads(row["interests_json"] or "[]")
+    def get_digest_cost(self, digest_id: int) -> str:
+        try:
+            row = self._conn.execute(
+                "SELECT cost_breakdown FROM digests WHERE id = ?", (digest_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return ""
+        if row is None:
+            return ""
+        return row["cost_breakdown"] or ""
 
     # --- General ---
 
     def save(self) -> None:
         self._set_meta("last_run", datetime.now(UTC).isoformat())
         self._conn.commit()
-
-    def load(self) -> None:
-        pass  # SQLite is always loaded
 
     @property
     def last_run(self) -> datetime | None:
@@ -616,6 +528,22 @@ class StateStore:
 
     def close(self) -> None:
         self._conn.close()
+
+    # --- Embedding cache ---
+
+    def get_cached_embedding(self, content_hash: str) -> bytes | None:
+        row = self._conn.execute(
+            "SELECT embedding FROM embeddings WHERE content_hash = ?",
+            (content_hash,),
+        ).fetchone()
+        return row["embedding"] if row else None
+
+    def cache_embedding(self, content_hash: str, embedding: bytes) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO embeddings (content_hash, embedding) VALUES (?, ?)",
+            (content_hash, embedding),
+        )
+        self._conn.commit()
 
 
 def _parse_dt(val: Any) -> datetime | None:

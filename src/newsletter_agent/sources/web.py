@@ -1,10 +1,12 @@
-"""Generic web source — deterministic extraction first, AI fallback second.
+"""Generic web source — deterministic extraction first, Jina/Firecrawl middle, AI fallback last.
 
 Extraction strategy per page (stops at first success):
 1. JSON API — if the response is JSON, extract articles from common structures
 2. RSS autodiscovery — if the page links to a feed, fetch and parse it
-3. HTML structure — look for <article> tags, common listing patterns
-4. AI fallback — send page text to Claude Haiku for extraction
+3. Jina Reader — prepend https://r.jina.ai/ to get clean Markdown (free)
+4. Firecrawl — JS-heavy fallback via firecrawl API (optional, needs key)
+5. HTML structure — extract articles from semantic HTML tags and patterns
+6. AI fallback — send page text to Claude Haiku for extraction
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import os
 import re
 from datetime import UTC, datetime
 from time import mktime
+from typing import TYPE_CHECKING
 from urllib.parse import urljoin
 
 import anthropic
@@ -23,6 +26,9 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from newsletter_agent.models import Article
+
+if TYPE_CHECKING:
+    from newsletter_agent.report import RunReport
 from newsletter_agent.sources.base import BaseSource
 
 logger = logging.getLogger(__name__)
@@ -55,10 +61,16 @@ class WebSource(BaseSource):
         pages: dict[str, str],
         api_key: str | None = None,
         defer_ai: bool = False,
+        jina_enabled: bool = True,
+        firecrawl_enabled: bool = False,
+        haiku_fallback_enabled: bool = True,
     ):
         self._pages = pages
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         self.defer_ai = defer_ai
+        self.jina_enabled = jina_enabled
+        self.firecrawl_enabled = firecrawl_enabled
+        self.haiku_fallback_enabled = haiku_fallback_enabled
         self.pending_extractions: list[dict[str, str]] = []
 
     @property
@@ -72,7 +84,11 @@ class WebSource(BaseSource):
     def is_available(self) -> bool:
         return bool(self._pages)
 
-    async def fetch(self, since: datetime | None = None) -> list[Article]:
+    async def fetch(
+        self,
+        since: datetime | None = None,
+        report: RunReport | None = None,
+    ) -> list[Article]:
         articles: list[Article] = []
 
         async with httpx.AsyncClient(
@@ -82,12 +98,19 @@ class WebSource(BaseSource):
         ) as http:
             for page_name, page_url in self._pages.items():
                 try:
-                    page_articles = await self._extract_from_page(
+                    page_articles, strategy = await self._extract_from_page(
                         http, page_name, page_url, since,
                     )
                     articles.extend(page_articles)
-                except Exception:
+                    if report is not None:
+                        if page_articles:
+                            report.add_web_ok(page_name, strategy)
+                        else:
+                            report.add_web_failed(page_name, "no articles found")
+                except Exception as e:
                     logger.exception("WebSource failed for '%s'", page_name)
+                    if report is not None:
+                        report.add_web_failed(page_name, str(e))
                     continue
 
         return articles
@@ -98,7 +121,7 @@ class WebSource(BaseSource):
         page_name: str,
         page_url: str,
         since: datetime | None,
-    ) -> list[Article]:
+    ) -> tuple[list[Article], str]:
         resp = await http.get(page_url)
         resp.raise_for_status()
 
@@ -109,7 +132,7 @@ class WebSource(BaseSource):
             articles = _try_json(resp.text, page_name, page_url, since)
             if articles:
                 logger.info("  %s: %d articles via JSON API", page_name, len(articles))
-                return articles
+                return articles, "JSON API"
 
         # Strategy 2: RSS/Atom autodiscovery
         feed_url = _find_feed_link(resp.text, page_url)
@@ -117,18 +140,44 @@ class WebSource(BaseSource):
             articles = await _try_feed(http, feed_url, page_name, since)
             if articles:
                 logger.info("  %s: %d articles via RSS autodiscovery", page_name, len(articles))
-                return articles
+                return articles, "RSS autodiscovery"
 
-        # Strategy 3: HTML structural extraction
+        # Strategy 3: Jina Reader (free Markdown extraction)
+        if self.jina_enabled:
+            articles = await _try_jina(http, page_name, page_url, since)
+            if articles:
+                logger.info("  %s: %d articles via Jina Reader", page_name, len(articles))
+                return articles, "Jina Reader"
+
+        # Strategy 4: Firecrawl (JS-heavy fallback)
+        if self.firecrawl_enabled and os.environ.get("FIRECRAWL_API_KEY"):
+            articles = _try_firecrawl(page_name, page_url, since)
+            if articles:
+                logger.info("  %s: %d articles via Firecrawl", page_name, len(articles))
+                return articles, "Firecrawl"
+        elif self.firecrawl_enabled:
+            logger.debug(
+                "  %s: FIRECRAWL_API_KEY not set — skipping Firecrawl",
+                page_name,
+            )
+
+        # Strategy 5: HTML structural extraction
         articles = _try_html(resp.text, page_name, page_url, since)
         if articles:
             logger.info("  %s: %d articles via HTML structure", page_name, len(articles))
-            return articles
+            return articles, "HTML"
 
-        # Strategy 4: AI fallback
+        # Strategy 6: AI fallback (Claude Haiku)
+        if not self.haiku_fallback_enabled:
+            logger.warning("  %s: no articles found, AI fallback disabled", page_name)
+            return [], "none"
+
         if not self._api_key:
-            logger.warning("  %s: no articles found deterministically, and no API key for AI fallback", page_name)
-            return []
+            logger.warning(
+                "  %s: no articles found, no API key for AI fallback",
+                page_name,
+            )
+            return [], "none"
 
         if self.defer_ai:
             content = _html_to_text(resp.text, page_url)
@@ -141,11 +190,11 @@ class WebSource(BaseSource):
                     "content": content,
                 })
                 logger.info("  %s: deferred to batch AI extraction", page_name)
-            return []
+            return [], "deferred"
 
         articles = _try_ai(resp.text, page_name, page_url, since, self._api_key)
         logger.info("  %s: %d articles via AI extraction", page_name, len(articles))
-        return articles
+        return articles, "AI fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +227,9 @@ def _try_json(
             url = urljoin(page_url, url)
         else:
             item_id = _get_json_field(item, ["id", "report_id", "slug"])
-            if item_id:
+            if item_id and "hackerone" in page_url.lower():
+                url = f"https://hackerone.com/reports/{item_id}"
+            elif item_id:
                 url = f"{page_url.rstrip('/')}#{item_id}"
             else:
                 url = page_url
@@ -287,7 +338,124 @@ def _parse_feed_date(entry: object) -> datetime | None:
 
 
 # ---------------------------------------------------------------------------
-# Strategy 3: HTML structural extraction
+# Strategy 3: Jina Reader (free Markdown extraction)
+# ---------------------------------------------------------------------------
+
+async def _try_jina(
+    http: httpx.AsyncClient,
+    page_name: str,
+    page_url: str,
+    since: datetime | None,
+) -> list[Article]:
+    jina_url = f"https://r.jina.ai/{page_url}"
+    try:
+        resp = await http.get(
+            jina_url,
+            headers={"User-Agent": "Mozilla/5.0 NewsletterAgent/2.0"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        logger.debug("  %s: Jina Reader request failed", page_name)
+        return []
+
+    content = resp.text.strip()
+    if len(content) < 200:
+        logger.debug(
+            "  %s: Jina Reader returned too little content (%d chars)",
+            page_name, len(content),
+        )
+        return []
+
+    return _parse_markdown_articles(content, page_name, page_url, since)
+
+
+def _parse_markdown_articles(
+    markdown: str,
+    page_name: str,
+    page_url: str,
+    since: datetime | None,
+) -> list[Article]:
+    articles: list[Article] = []
+    seen_urls: set[str] = set()
+
+    # Extract Markdown links with heading context: ## [Title](url)  or  ## Title\n...[link](url)
+    # Pattern 1: Markdown heading links like ## [Title](URL)
+    for match in re.finditer(r'^#{1,4}\s+\[([^\]]+)\]\(([^)]+)\)', markdown, re.MULTILINE):
+        title = match.group(1).strip()
+        url = match.group(2).strip()
+        if not title or len(title) < 5 or not url.startswith("http"):
+            continue
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        articles.append(Article(
+            title=title,
+            url=url,
+            source_id="web",
+            source_name=page_name,
+            published_at=None,
+            raw_summary="",
+        ))
+
+    # Pattern 2: Standalone links [Title](URL) that look like article titles
+    if len(articles) < 3:
+        for match in re.finditer(r'\[([^\]]{10,})\]\((https?://[^)]+)\)', markdown):
+            title = match.group(1).strip()
+            url = match.group(2).strip()
+            if url in seen_urls:
+                continue
+            if url == page_url:
+                continue
+            seen_urls.add(url)
+            articles.append(Article(
+                title=title,
+                url=url,
+                source_id="web",
+                source_name=page_name,
+                published_at=None,
+                raw_summary="",
+            ))
+
+    if len(articles) >= 3:
+        return articles
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Strategy 4: Firecrawl (JS-heavy sites)
+# ---------------------------------------------------------------------------
+
+def _try_firecrawl(
+    page_name: str,
+    page_url: str,
+    since: datetime | None,
+) -> list[Article]:
+    api_key = os.environ.get("FIRECRAWL_API_KEY", "")
+    if not api_key:
+        return []
+
+    try:
+        from firecrawl import FirecrawlApp
+        app = FirecrawlApp(api_key=api_key)
+        result = app.scrape(page_url, formats=["markdown"])
+    except Exception:
+        logger.debug("  %s: Firecrawl scrape failed", page_name, exc_info=True)
+        return []
+
+    markdown = ""
+    if hasattr(result, "markdown"):
+        markdown = result.markdown or ""
+    elif isinstance(result, dict):
+        markdown = result.get("markdown", "")
+    if not markdown or len(markdown) < 200:
+        return []
+
+    return _parse_markdown_articles(markdown, page_name, page_url, since)
+
+
+# ---------------------------------------------------------------------------
+# Strategy 5: HTML structural extraction
 # ---------------------------------------------------------------------------
 
 def _try_html(
@@ -394,7 +562,7 @@ def _extract_from_listing_patterns(
 
 
 # ---------------------------------------------------------------------------
-# Strategy 4: AI extraction (Claude Haiku)
+# Strategy 6: AI extraction (Claude Haiku)
 # ---------------------------------------------------------------------------
 
 def _try_ai(
@@ -413,7 +581,7 @@ def _try_ai(
 
     prompt = AI_EXTRACTION_PROMPT.format(base_url=page_url, content=content)
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key, base_url="https://api.anthropic.com")
     response = client.messages.create(
         model="claude-haiku-4-5",
         max_tokens=4096,
@@ -512,7 +680,7 @@ def submit_extraction_batch(
     api_key: str,
 ) -> str:
     """Submit deferred web extractions as a Batch API job. Returns batch ID."""
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key, base_url="https://api.anthropic.com")
 
     requests = []
     for i, item in enumerate(pending):
@@ -544,7 +712,7 @@ def collect_extraction_results(
     since: datetime | None = None,
 ) -> list[Article]:
     """Collect results from a completed web extraction batch."""
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key, base_url="https://api.anthropic.com")
 
     meta_by_id = {
         f"web-extract-{i}": item for i, item in enumerate(pending_meta)

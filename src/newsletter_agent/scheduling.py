@@ -11,9 +11,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-PLIST_NAME_SYNC = "com.newsletter-agent.plist"
-PLIST_NAME_SUBMIT = "com.newsletter-agent.submit.plist"
-PLIST_NAME_COLLECT = "com.newsletter-agent.collect.plist"
+PLIST_NAME = "com.newsletter-agent.plist"
 
 PLIST_TEMPLATE = """\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -35,9 +33,9 @@ PLIST_TEMPLATE = """\
         <integer>{minute}</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>{log_dir}/newsletter-{log_suffix}-stdout.log</string>
+    <string>{log_dir}/newsletter-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>{log_dir}/newsletter-{log_suffix}-stderr.log</string>
+    <string>{log_dir}/newsletter-stderr.log</string>
     <key>WorkingDirectory</key>
     <string>{working_dir}</string>
     <key>EnvironmentVariables</key>
@@ -53,32 +51,15 @@ PLIST_TEMPLATE = """\
 def install_schedule(
     time_str: str = "08:00",
     config_path: str = "config.yaml",
-    use_batch: bool = False,
-    submit_time_str: str = "23:00",
 ) -> str:
     """Install a daily schedule. Returns description of what was installed."""
     hour, minute = _parse_time(time_str)
-    submit_hour, submit_minute = _parse_time(submit_time_str)
 
     if sys.platform == "darwin":
-        if use_batch:
-            return _install_launchd_batch(
-                submit_hour, submit_minute, hour, minute, config_path,
-            )
-        return _install_launchd_sync(hour, minute, config_path)
-
+        return _install_launchd(hour, minute, config_path)
     if sys.platform == "win32":
-        if use_batch:
-            return _install_schtasks_batch(
-                submit_hour, submit_minute, hour, minute, config_path,
-            )
-        return _install_schtasks_sync(hour, minute, config_path)
-
-    if use_batch:
-        return _install_cron_batch(
-            submit_hour, submit_minute, hour, minute, config_path,
-        )
-    return _install_cron_sync(hour, minute, config_path)
+        return _install_schtasks(hour, minute, config_path)
+    return _install_cron(hour, minute, config_path)
 
 
 def uninstall_schedule() -> bool:
@@ -154,9 +135,9 @@ def _unload_and_remove_plist(name: str) -> bool:
     return True
 
 
-# --- Sync mode (single job) ---
+# --- macOS (launchd) ---
 
-def _install_launchd_sync(hour: int, minute: int, config_path: str) -> str:
+def _install_launchd(hour: int, minute: int, config_path: str) -> str:
     newsletter_bin = _find_newsletter_bin()
     working_dir, log_dir, path_env = _get_env()
     config_abs = str(Path(config_path).resolve())
@@ -168,16 +149,22 @@ def _install_launchd_sync(hour: int, minute: int, config_path: str) -> str:
         hour=hour,
         minute=minute,
         log_dir=log_dir,
-        log_suffix="send",
         working_dir=working_dir,
         path_env=path_env,
     )
 
-    path = _write_and_load_plist(PLIST_NAME_SYNC, content)
+    # Clean up any legacy batch plists
+    for legacy in ["com.newsletter-agent.submit.plist",
+                    "com.newsletter-agent.collect.plist"]:
+        _unload_and_remove_plist(legacy)
+
+    path = _write_and_load_plist(PLIST_NAME, content)
     return path
 
 
-def _install_cron_sync(hour: int, minute: int, config_path: str) -> str:
+# --- Linux (cron) ---
+
+def _install_cron(hour: int, minute: int, config_path: str) -> str:
     newsletter_bin = _find_newsletter_bin()
     working_dir, log_dir, _ = _get_env()
     config_abs = str(Path(config_path).resolve())
@@ -192,82 +179,6 @@ def _install_cron_sync(hour: int, minute: int, config_path: str) -> str:
     _write_cron_lines([cron_line])
     return f"Cron entry: {cron_line}"
 
-
-# --- Batch mode (two jobs: submit + collect) ---
-
-def _install_launchd_batch(
-    submit_hour: int, submit_minute: int,
-    collect_hour: int, collect_minute: int,
-    config_path: str,
-) -> str:
-    newsletter_bin = _find_newsletter_bin()
-    working_dir, log_dir, path_env = _get_env()
-    config_abs = str(Path(config_path).resolve())
-
-    # Remove old sync plist if it exists
-    _unload_and_remove_plist(PLIST_NAME_SYNC)
-
-    # Submit job (runs at night)
-    submit_args = [newsletter_bin, "batch-submit", "--config", config_abs]
-    submit_content = PLIST_TEMPLATE.format(
-        label="com.newsletter-agent.submit",
-        program_args=_format_plist_args(submit_args),
-        hour=submit_hour,
-        minute=submit_minute,
-        log_dir=log_dir,
-        log_suffix="submit",
-        working_dir=working_dir,
-        path_env=path_env,
-    )
-    submit_path = _write_and_load_plist(PLIST_NAME_SUBMIT, submit_content)
-
-    # Collect job (runs in the morning)
-    collect_args = [
-        newsletter_bin, "batch-collect", "--send-email", "--config", config_abs,
-    ]
-    collect_content = PLIST_TEMPLATE.format(
-        label="com.newsletter-agent.collect",
-        program_args=_format_plist_args(collect_args),
-        hour=collect_hour,
-        minute=collect_minute,
-        log_dir=log_dir,
-        log_suffix="collect",
-        working_dir=working_dir,
-        path_env=path_env,
-    )
-    collect_path = _write_and_load_plist(PLIST_NAME_COLLECT, collect_content)
-
-    return f"Submit: {submit_path}\nCollect: {collect_path}"
-
-
-def _install_cron_batch(
-    submit_hour: int, submit_minute: int,
-    collect_hour: int, collect_minute: int,
-    config_path: str,
-) -> str:
-    newsletter_bin = _find_newsletter_bin()
-    working_dir, log_dir, _ = _get_env()
-    config_abs = str(Path(config_path).resolve())
-
-    submit_log = f"{log_dir}/newsletter-submit.log"
-    collect_log = f"{log_dir}/newsletter-collect.log"
-
-    submit_line = (
-        f"{submit_minute} {submit_hour} * * * "
-        f"cd {working_dir} && {newsletter_bin} batch-submit -c {config_abs} "
-        f">> {submit_log} 2>&1"
-    )
-    collect_line = (
-        f"{collect_minute} {collect_hour} * * * "
-        f"cd {working_dir} && {newsletter_bin} batch-collect --send-email -c {config_abs} "
-        f">> {collect_log} 2>&1"
-    )
-
-    _write_cron_lines([submit_line, collect_line])
-    return f"Submit: {submit_line}\nCollect: {collect_line}"
-
-
-# --- Cron helpers ---
 
 def _write_cron_lines(new_lines: list[str]) -> None:
     result = subprocess.run(
@@ -289,7 +200,8 @@ def _write_cron_lines(new_lines: list[str]) -> None:
 
 def _uninstall_launchd() -> bool:
     removed = False
-    for name in [PLIST_NAME_SYNC, PLIST_NAME_SUBMIT, PLIST_NAME_COLLECT]:
+    for name in [PLIST_NAME, "com.newsletter-agent.submit.plist",
+                 "com.newsletter-agent.collect.plist"]:
         if _unload_and_remove_plist(name):
             removed = True
     return removed
@@ -310,24 +222,17 @@ def _uninstall_cron() -> bool:
     return True
 
 
-# --- Windows Task Scheduler ---
+# --- Windows (Task Scheduler) ---
 
-SCHTASK_SYNC = "NewsletterAgent"
-SCHTASK_SUBMIT = "NewsletterAgent-Submit"
-SCHTASK_COLLECT = "NewsletterAgent-Collect"
+SCHTASK_NAME = "NewsletterAgent"
 
 
-def _build_task_command(newsletter_bin: str, subcommand: str, config_abs: str,
-                        extra_args: list[str] | None = None) -> str:
-    parts = [newsletter_bin, subcommand, "--config", config_abs]
-    if extra_args:
-        parts.extend(extra_args)
-    return " ".join(parts)
+def _build_task_command(newsletter_bin: str, config_abs: str) -> str:
+    return f"{newsletter_bin} send --config {config_abs}"
 
 
 def _create_schtask(task_name: str, time_str: str, command: str,
                     working_dir: str, log_path: str) -> None:
-    # Delete existing task if present
     subprocess.run(
         ["schtasks", "/Delete", "/TN", task_name, "/F"],
         capture_output=True,
@@ -353,56 +258,27 @@ def _delete_schtask(task_name: str) -> bool:
     return result.returncode == 0
 
 
-def _install_schtasks_sync(hour: int, minute: int, config_path: str) -> str:
+def _install_schtasks(hour: int, minute: int, config_path: str) -> str:
     newsletter_bin = _find_newsletter_bin()
     working_dir, log_dir, _ = _get_env()
     config_abs = str(Path(config_path).resolve())
     log_path = f"{log_dir}\\newsletter-send.log"
     time_str = f"{hour:02d}:{minute:02d}"
 
-    command = _build_task_command(newsletter_bin, "send", config_abs)
+    command = _build_task_command(newsletter_bin, config_abs)
 
-    # Remove batch tasks if they exist
-    _delete_schtask(SCHTASK_SUBMIT)
-    _delete_schtask(SCHTASK_COLLECT)
+    # Clean up any legacy batch tasks
+    for legacy in ["NewsletterAgent-Submit", "NewsletterAgent-Collect"]:
+        _delete_schtask(legacy)
 
-    _create_schtask(SCHTASK_SYNC, time_str, command, working_dir, log_path)
-    return f"Task: {SCHTASK_SYNC} at {time_str}"
-
-
-def _install_schtasks_batch(
-    submit_hour: int, submit_minute: int,
-    collect_hour: int, collect_minute: int,
-    config_path: str,
-) -> str:
-    newsletter_bin = _find_newsletter_bin()
-    working_dir, log_dir, _ = _get_env()
-    config_abs = str(Path(config_path).resolve())
-
-    # Remove sync task if it exists
-    _delete_schtask(SCHTASK_SYNC)
-
-    submit_time = f"{submit_hour:02d}:{submit_minute:02d}"
-    submit_cmd = _build_task_command(newsletter_bin, "batch-submit", config_abs)
-    submit_log = f"{log_dir}\\newsletter-submit.log"
-    _create_schtask(SCHTASK_SUBMIT, submit_time, submit_cmd, working_dir, submit_log)
-
-    collect_time = f"{collect_hour:02d}:{collect_minute:02d}"
-    collect_cmd = _build_task_command(
-        newsletter_bin, "batch-collect", config_abs, ["--send-email"],
-    )
-    collect_log = f"{log_dir}\\newsletter-collect.log"
-    _create_schtask(SCHTASK_COLLECT, collect_time, collect_cmd, working_dir, collect_log)
-
-    return (
-        f"Submit: {SCHTASK_SUBMIT} at {submit_time}\n"
-        f"Collect: {SCHTASK_COLLECT} at {collect_time}"
-    )
+    _create_schtask(SCHTASK_NAME, time_str, command, working_dir, log_path)
+    return f"Task: {SCHTASK_NAME} at {time_str}"
 
 
 def _uninstall_schtasks() -> bool:
     removed = False
-    for name in [SCHTASK_SYNC, SCHTASK_SUBMIT, SCHTASK_COLLECT]:
+    for name in [SCHTASK_NAME, "NewsletterAgent-Submit",
+                 "NewsletterAgent-Collect"]:
         if _delete_schtask(name):
             removed = True
     return removed

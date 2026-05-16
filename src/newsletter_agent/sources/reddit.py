@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from time import mktime
+from typing import TYPE_CHECKING
 
 import feedparser
 import httpx
 
 from newsletter_agent.models import Article
 from newsletter_agent.sources.base import BaseSource
+
+if TYPE_CHECKING:
+    from newsletter_agent.report import RunReport
 
 
 class RedditSource(BaseSource):
@@ -24,7 +28,11 @@ class RedditSource(BaseSource):
     def source_id(self) -> str:
         return "reddit"
 
-    async def fetch(self, since: datetime | None = None) -> list[Article]:
+    async def fetch(
+        self,
+        since: datetime | None = None,
+        report: RunReport | None = None,
+    ) -> list[Article]:
         articles: list[Article] = []
         headers = {"User-Agent": "newsletter-agent/0.1.0"}
         async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=headers) as client:
@@ -50,7 +58,11 @@ class RedditSource(BaseSource):
                             raw_summary=_clean_summary(entry.get("summary", "")),
                             extra={"subreddit": sub},
                         ))
-                except (httpx.HTTPError, Exception):
+                    if report is not None:
+                        report.add_feed_ok(f"r/{sub}")
+                except Exception as e:
+                    if report is not None:
+                        report.add_feed_failed(f"r/{sub}", str(e))
                     continue
         return articles
 

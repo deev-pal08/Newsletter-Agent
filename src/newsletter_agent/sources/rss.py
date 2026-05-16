@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from time import mktime
+from typing import TYPE_CHECKING
 
 import feedparser
 import httpx
 
 from newsletter_agent.models import Article
 from newsletter_agent.sources.base import BaseSource
+
+if TYPE_CHECKING:
+    from newsletter_agent.report import RunReport
 
 
 class RSSSource(BaseSource):
@@ -24,7 +28,11 @@ class RSSSource(BaseSource):
     def source_id(self) -> str:
         return "rss"
 
-    async def fetch(self, since: datetime | None = None) -> list[Article]:
+    async def fetch(
+        self,
+        since: datetime | None = None,
+        report: RunReport | None = None,
+    ) -> list[Article]:
         articles: list[Article] = []
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             for feed_name, feed_url in self._feeds.items():
@@ -44,7 +52,11 @@ class RSSSource(BaseSource):
                             published_at=published,
                             raw_summary=_extract_summary(entry),
                         ))
-                except (httpx.HTTPError, Exception):
+                    if report is not None:
+                        report.add_feed_ok(feed_name)
+                except Exception as e:
+                    if report is not None:
+                        report.add_feed_failed(feed_name, str(e))
                     continue
         return articles
 

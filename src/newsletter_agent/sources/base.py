@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from newsletter_agent.models import Article
+
+if TYPE_CHECKING:
+    from newsletter_agent.report import RunReport
 
 
 class BaseSource(ABC):
@@ -22,7 +26,11 @@ class BaseSource(ABC):
         ...
 
     @abstractmethod
-    async def fetch(self, since: datetime | None = None) -> list[Article]:
+    async def fetch(
+        self,
+        since: datetime | None = None,
+        report: RunReport | None = None,
+    ) -> list[Article]:
         """Fetch new articles from this source."""
         ...
 

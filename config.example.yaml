@@ -47,10 +47,31 @@ sources:
 
 # LLM settings
 llm:
-  model: claude-haiku-4-5       # cheap default (~$1.35/month)
-  # model: claude-sonnet-4-6    # uncomment for higher quality (~$4/month)
+  model: claude-sonnet-4-6       # recommended for quality ranking
+  # model: claude-haiku-4-5      # cheaper alternative (~$1.35/month)
   api_key_env: ANTHROPIC_API_KEY
   max_articles_per_batch: 100
+  use_batch: true                # Batch API is 50% cheaper (default: on)
+  prompt_caching: true           # cache system prompt for 90% input savings
+
+# Source discovery (Tavily Search API)
+discovery:
+  tavily_queries_per_scan: 2
+  include_domains: []            # e.g. ["portswigger.net", "nvd.nist.gov"]
+  exclude_domains: []            # e.g. ["pinterest.com", "quora.com"]
+  search_depth: "advanced"       # "basic" ($0.008) or "advanced" ($0.016) per search
+
+# Article extraction settings
+extraction:
+  jina_enabled: true             # free Markdown extraction via r.jina.ai
+  firecrawl_enabled: false       # set true and add FIRECRAWL_API_KEY for JS sites
+  haiku_fallback_enabled: true   # Claude Haiku as last resort
+
+# Relevance filtering (DeepSeek V4 Flash pre-filter)
+filtering:
+  enabled: true
+  model: "deepseek-chat"
+  fail_open: true                # if filter errors, pass all articles through
 
 # Email delivery via Resend
 email:
@@ -67,7 +88,11 @@ state_dir: data
 # Deduplication settings (v2)
 dedup:
   fuzzy_url: true                    # normalize URLs before comparing
-  title_similarity_threshold: 0.85   # 0.0–1.0; higher = stricter matching
+  title_similarity_threshold: 0.85   # difflib fallback threshold
+  use_semantic: true                 # semantic dedup via OpenAI embeddings
+  semantic_threshold: 0.88           # cosine similarity threshold
+  embedding_model: "text-embedding-3-small"
+  cache_embeddings: true             # store in SQLite to avoid re-embedding
   strip_query_params:                # query params removed during normalization
     - utm_source
     - utm_medium

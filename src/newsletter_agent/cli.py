@@ -6,8 +6,11 @@ import logging
 import sys
 
 import click
+from dotenv import load_dotenv
 
 from newsletter_agent.config import load_config
+
+load_dotenv()
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -33,70 +36,26 @@ def cli(ctx: click.Context, config: str, verbose: bool) -> None:
 
 
 @cli.command()
-@click.pass_context
-def fetch(ctx: click.Context) -> None:
-    """Fetch new articles from all enabled sources."""
-    from newsletter_agent.pipeline import Pipeline
-
-    config = ctx.obj["config"]
-    pipeline = Pipeline(config)
-    articles = pipeline.run_fetch()
-
-    click.echo(f"\nFetched {len(articles)} new articles:")
-    for a in articles[:20]:
-        click.echo(f"  [{a.source_name}] {a.title}")
-    if len(articles) > 20:
-        click.echo(f"  ... and {len(articles) - 20} more")
-
-
-@cli.command()
-@click.option("--model", "-m", help="Override LLM model for this run")
-@click.option("--batch", is_flag=True, help="Use Batch API (50% cheaper, slower)")
-@click.pass_context
-def digest(ctx: click.Context, model: str | None, batch: bool) -> None:
-    """Fetch, rank, and print digest (no email)."""
-    from newsletter_agent.pipeline import Pipeline
-
-    config = ctx.obj["config"]
-    pipeline = Pipeline(config, model_override=model)
-    d = pipeline.run_digest(use_batch=batch)
-
-    click.echo(f"\n{'=' * 60}")
-    click.echo(f"  DIGEST — {d.date.strftime('%B %d, %Y')}")
-    n = len(d.articles)
-    click.echo(f"  {d.total_fetched} scanned | {d.total_after_dedup} new | {n} ranked")
-    click.echo(f"  Generated in {d.generation_time_seconds:.1f}s")
-    if batch:
-        click.echo("  Mode: Batch API (50% cheaper)")
-    click.echo(f"{'=' * 60}\n")
-
-    _print_section("CRITICAL — ACT NOW", d.critical, "red")
-    _print_section("IMPORTANT — READ THIS WEEK", d.important, "yellow")
-    _print_section("INTERESTING — QUEUE FOR WEEKEND", d.interesting, "blue")
-    _print_section("REFERENCE — SAVE FOR LATER", d.reference, "white")
-
-
-@cli.command()
 @click.option("--model", "-m", help="Override LLM model for this run")
 @click.option("--dry-run", is_flag=True, help="Generate HTML but don't send email")
-@click.option("--batch", is_flag=True, help="Use Batch API (50% cheaper, slower)")
 @click.pass_context
-def send(ctx: click.Context, model: str | None, dry_run: bool, batch: bool) -> None:
-    """Full pipeline: fetch, rank, format, and send digest email."""
+def send(ctx: click.Context, model: str | None, dry_run: bool) -> None:
+    """Full pipeline: fetch, web search, rank, format, and send digest email."""
     from newsletter_agent.pipeline import Pipeline
 
     config = ctx.obj["config"]
     pipeline = Pipeline(config, model_override=model)
-    d = pipeline.run_send(dry_run=dry_run, use_batch=batch)
+    d = pipeline.run_send(dry_run=dry_run)
 
     if dry_run:
         click.echo(f"Dry run complete. {len(d.articles)} articles ranked.")
-        if batch:
-            click.echo("Mode: Batch API (50% cheaper)")
         click.echo("HTML preview saved to data/")
     else:
         n_sources = len(d.sources_used)
         click.echo(f"Digest sent! {len(d.articles)} articles across {n_sources} sources.")
+
+    click.echo(pipeline.cost.format())
+    click.echo(pipeline.report.format())
 
 
 @cli.command()
@@ -267,7 +226,6 @@ def status(ctx: click.Context) -> None:
     click.echo(f"  State backend:  SQLite ({config.state_dir}/newsletter.db)")
     click.echo(f"  LLM model:      {config.llm.model}")
     click.echo(f"  Email enabled:  {config.email.enabled}")
-    click.echo(f"  Fuzzy dedup:    {config.dedup.fuzzy_url}")
     click.echo(f"  Auto-disable:   {config.health.auto_disable} "
                f"(after {config.health.max_consecutive_failures} failures)")
 
@@ -279,6 +237,7 @@ def test_source(ctx: click.Context, source_name: str) -> None:
     """Test a single source by fetching and printing results."""
     import asyncio
 
+    from newsletter_agent.report import RunReport
     from newsletter_agent.sources import SOURCE_REGISTRY, instantiate_source
     from newsletter_agent.state.store import StateStore
 
@@ -290,12 +249,13 @@ def test_source(ctx: click.Context, source_name: str) -> None:
 
     state = StateStore(config.state_dir)
     source = instantiate_source(source_name, config, state)
+    report = RunReport()
 
     click.echo(f"Testing source: {source.name} ({source.source_id})")
     click.echo(f"Available: {source.is_available()}")
     click.echo("Fetching...\n")
 
-    articles = asyncio.run(source.fetch())
+    articles = asyncio.run(source.fetch(report=report))
     click.echo(f"Found {len(articles)} articles:\n")
     for i, a in enumerate(articles[:15], 1):
         click.echo(f"  {i}. {a.title}")
@@ -306,6 +266,8 @@ def test_source(ctx: click.Context, source_name: str) -> None:
         click.echo()
     if len(articles) > 15:
         click.echo(f"  ... and {len(articles) - 15} more")
+
+    click.echo(report.format())
 
 
 @cli.command()
@@ -341,6 +303,12 @@ def history(ctx: click.Context, limit: int, since: str | None, until: str | None
         _print_section("IMPORTANT — READ THIS WEEK", d.important, "yellow")
         _print_section("INTERESTING — QUEUE FOR WEEKEND", d.interesting, "blue")
         _print_section("REFERENCE — SAVE FOR LATER", d.reference, "white")
+        cost_json = state.get_digest_cost(detail)
+        if cost_json:
+            import json as _json
+            cost_data = _json.loads(cost_json)
+            total = cost_data.get("total", 0)
+            click.echo(f"  Cost: ${total:.3f}")
         return
 
     date_from = datetime.fromisoformat(since) if since else None
@@ -367,12 +335,9 @@ def history(ctx: click.Context, limit: int, since: str | None, until: str | None
 
 @cli.command(name="install-schedule")
 @click.option("--time", "-t", "time_str", default="08:00", help="Email delivery time (HH:MM)")
-@click.option("--batch", is_flag=True, help="Use async Batch API (50% cheaper)")
-@click.option("--submit-time", default="23:00", help="Batch submit time (HH:MM, used with --batch)")
 @click.option("--uninstall", is_flag=True, help="Remove the installed schedule")
 @click.pass_context
-def install_schedule_cmd(ctx: click.Context, time_str: str, batch: bool,
-                         submit_time: str, uninstall: bool) -> None:
+def install_schedule_cmd(ctx: click.Context, time_str: str, uninstall: bool) -> None:
     """Install or remove a daily schedule (launchd/cron)."""
     from newsletter_agent.scheduling import install_schedule, uninstall_schedule
 
@@ -388,14 +353,8 @@ def install_schedule_cmd(ctx: click.Context, time_str: str, batch: bool,
     result = install_schedule(
         time_str=time_str,
         config_path=config_path,
-        use_batch=batch,
-        submit_time_str=submit_time,
     )
-    if batch:
-        click.echo("Batch schedule installed (50% cheaper):")
-        click.echo(f"  Submit at {submit_time} → Collect & email at {time_str}")
-    else:
-        click.echo(f"Schedule installed: daily at {time_str}")
+    click.echo(f"Schedule installed: daily at {time_str}")
     click.echo(f"  {result}")
     click.echo("  Logs: data/logs/newsletter-*.log")
 
@@ -419,182 +378,6 @@ def re_enable(ctx: click.Context, source_name: str) -> None:
         click.echo(f"Source '{source_name}' re-enabled. Error count reset to 0.")
     else:
         click.echo(f"Source '{source_name}' has no error history.")
-
-
-@cli.command(name="batch-submit")
-@click.option("--model", "-m", help="Override LLM model for this run")
-@click.pass_context
-def batch_submit(ctx: click.Context, model: str | None) -> None:
-    """Submit articles for async batch ranking (50% cheaper).
-
-    Fetches and deduplicates articles, then submits them to the
-    Claude Batch API. Results are collected later with batch-collect.
-    """
-    from newsletter_agent.pipeline import Pipeline
-
-    config = ctx.obj["config"]
-    pipeline = Pipeline(config, model_override=model)
-    batch_id = pipeline.run_batch_submit()
-
-    if batch_id:
-        click.echo(f"Batch submitted: {batch_id}")
-        click.echo("Run `newsletter batch-collect` to check results.")
-    else:
-        click.echo("No new articles to rank.")
-
-
-@cli.command(name="batch-collect")
-@click.option("--batch-id", "-b", default=None, help="Specific batch ID to collect")
-@click.option("--send-email", is_flag=True, help="Send digest email if results are ready")
-@click.option("--model", "-m", help="Override LLM model for this run")
-@click.pass_context
-def batch_collect(ctx: click.Context, batch_id: str | None, send_email: bool,
-                  model: str | None) -> None:
-    """Collect results from a pending batch job.
-
-    If the batch is still processing, shows the current status.
-    If complete, builds the digest and optionally sends the email.
-    """
-    from newsletter_agent.pipeline import Pipeline
-
-    config = ctx.obj["config"]
-    pipeline = Pipeline(config, model_override=model)
-    digest = pipeline.run_batch_collect(batch_id=batch_id)
-
-    if digest is None:
-        pending = pipeline.state.get_pending_batch()
-        if pending:
-            click.echo(f"Batch {pending['batch_id']} is still processing.")
-            click.echo("Run this command again later.")
-        else:
-            click.echo("No pending batch jobs.")
-        return
-
-    n = len(digest.articles)
-    click.echo(f"\nBatch complete! {n} articles ranked.")
-    click.echo(f"\n{'=' * 60}")
-    click.echo(f"  DIGEST — {digest.date.strftime('%B %d, %Y')}")
-    click.echo(f"{'=' * 60}\n")
-
-    _print_section("CRITICAL — ACT NOW", digest.critical, "red")
-    _print_section("IMPORTANT — READ THIS WEEK", digest.important, "yellow")
-    _print_section("INTERESTING — QUEUE FOR WEEKEND", digest.interesting, "blue")
-    _print_section("REFERENCE — SAVE FOR LATER", digest.reference, "white")
-
-    if send_email and pipeline.delivery:
-        email_id = pipeline.delivery.send_digest(digest)
-        if digest.digest_id:
-            pipeline.state.update_digest_email(digest.digest_id, email_id)
-        click.echo(f"Digest email sent! (email_id={email_id})")
-
-
-@cli.command()
-@click.option("--dry-run", is_flag=True, help="Show discoveries without adding")
-@click.option("--auto", is_flag=True, help="Automatically add all discovered resources")
-@click.pass_context
-def scan(ctx: click.Context, dry_run: bool, auto: bool) -> None:
-    """Scan the web for new resources matching your profile and interests.
-
-    Uses Claude Sonnet with web search to discover blogs, YouTube channels,
-    podcasts, newsletters, communities, courses, tools, and any other
-    resources relevant to your AboutMe profile. All discoveries are stored
-    in the database.
-    """
-    from newsletter_agent.config import load_about_me
-    from newsletter_agent.scanner import SourceScanner, apply_scan_results
-    from newsletter_agent.state.store import StateStore
-
-    config = ctx.obj["config"]
-    about_me = load_about_me(config.about_me)
-
-    if not about_me and not config.interests:
-        click.echo("No AboutMe.md or interests configured. Nothing to scan for.")
-        click.echo("Create AboutMe.md (see AboutMe.example.md) or add interests to config.yaml.")
-        return
-
-    state = StateStore(config.state_dir)
-
-    click.echo("Scanning for new resources based on your profile...")
-    click.echo("  Model: claude-sonnet-4-6 (with web search)")
-    if about_me:
-        click.echo("  Profile: AboutMe.md loaded")
-    else:
-        click.echo("  Profile: not found (create AboutMe.md for better results)")
-    if config.interests:
-        click.echo(f"  Interests: {', '.join(config.interests)}")
-    click.echo(f"  Existing resources: {state.resource_count()}")
-    click.echo()
-
-    scanner = SourceScanner(config, state, about_me=about_me)
-    results = scanner.scan()
-
-    if results.is_empty:
-        click.echo("No new resources discovered.")
-        return
-
-    click.echo(f"Found {results.total} new resources:\n")
-
-    for i, res in enumerate(results.resources):
-        num = i + 1
-        res_type = res.get("type", "other")
-        name = res.get("name", "")
-        url = res.get("url", "")
-        feed_url = res.get("feed_url")
-        description = res.get("description", "")
-
-        type_label = click.style(f"[{res_type}]", fg="magenta")
-        if feed_url:
-            dest = click.style("→ rss (auto-fetched)", fg="green")
-        elif res_type == "subreddit":
-            dest = click.style("→ reddit (auto-fetched)", fg="green")
-        else:
-            dest = click.style("→ reference", fg="yellow")
-
-        click.echo(f"  {num}. {type_label} {name}  {dest}")
-        click.echo(click.style(f"     {url}", fg="bright_black"))
-        if feed_url:
-            click.echo(click.style(f"     Feed: {feed_url}", fg="bright_black"))
-        if description:
-            click.echo(click.style(f"     {description}", fg="cyan"))
-        click.echo()
-
-    if results.summary:
-        click.echo(click.style(f"  {results.summary}", fg="white"))
-        click.echo()
-
-    if dry_run:
-        click.echo("Dry run — no changes made.")
-        return
-
-    if auto:
-        selected = list(range(results.total))
-    else:
-        click.echo("Enter numbers to add (e.g., 1,3,5), 'all' for everything, or 'none' to skip:")
-        choice = click.prompt("  Add", default="all")
-
-        if choice.lower() == "none":
-            click.echo("No resources added.")
-            return
-        elif choice.lower() == "all":
-            selected = list(range(results.total))
-        else:
-            try:
-                selected = [int(x.strip()) - 1 for x in choice.split(",") if x.strip()]
-            except ValueError:
-                click.echo("Invalid input. No resources added.")
-                return
-
-    feeds, subs, refs = apply_scan_results(state, results, selected)
-
-    total = feeds + subs + refs
-    click.echo(f"\nAdded {total} resources to database:")
-    if feeds:
-        click.echo(f"  {feeds} RSS feeds (auto-fetched daily)")
-    if subs:
-        click.echo(f"  {subs} subreddits (auto-fetched daily)")
-    if refs:
-        click.echo(f"  {refs} reference resources")
-    click.echo("\nRun `newsletter resources` to see all resources.")
 
 
 def _print_section(title: str, articles: list, color: str) -> None:  # type: ignore[type-arg]

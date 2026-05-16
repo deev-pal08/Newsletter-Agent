@@ -13,6 +13,8 @@ class LLMConfig(BaseModel):
     model: str = "claude-haiku-4-5"
     api_key_env: str = "ANTHROPIC_API_KEY"
     max_articles_per_batch: int = 100
+    use_batch: bool = True
+    prompt_caching: bool = True
 
     @property
     def api_key(self) -> str:
@@ -40,25 +42,9 @@ class SourceToggle(BaseModel):
     enabled: bool = True
 
 
-class HackerNewsConfig(SourceToggle):
-    min_score: int = 50
-    max_stories: int = 100
-
-
-class ArxivConfig(SourceToggle):
-    categories: list[str] = Field(default_factory=lambda: ["cs.CR", "cs.AI", "cs.LG"])
-    max_results: int = 50
-
-
 class SourcesConfig(BaseModel):
     rss: SourceToggle = SourceToggle()
-    arxiv: ArxivConfig = ArxivConfig()
-    hackernews: HackerNewsConfig = HackerNewsConfig()
-    github_trending: SourceToggle = SourceToggle()
     reddit: SourceToggle = SourceToggle()
-    hackerone: SourceToggle = SourceToggle(enabled=False)
-    oss_security: SourceToggle = SourceToggle()
-    conferences: SourceToggle = SourceToggle(enabled=False)
     web: SourceToggle = SourceToggle()
 
 
@@ -69,17 +55,30 @@ class HealthConfig(BaseModel):
 
 
 class DedupConfig(BaseModel):
-    fuzzy_url: bool = True
-    title_similarity_threshold: float = 0.85
-    strip_query_params: list[str] = Field(default_factory=lambda: [
-        "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
-        "ref", "source", "fbclid", "gclid",
-    ])
+    strip_tracking_params: bool = True
+    use_semantic: bool = True
+    semantic_threshold: float = 0.88
+    embedding_model: str = "text-embedding-3-small"
+    cache_embeddings: bool = True
 
 
-class ScheduleConfig(BaseModel):
-    time: str = "08:00"
-    timezone: str = "America/New_York"
+class DiscoveryConfig(BaseModel):
+    tavily_queries_per_scan: int = 2
+    include_domains: list[str] = Field(default_factory=list)
+    exclude_domains: list[str] = Field(default_factory=list)
+    search_depth: str = "advanced"
+
+
+class ExtractionConfig(BaseModel):
+    jina_enabled: bool = True
+    firecrawl_enabled: bool = False
+    haiku_fallback_enabled: bool = True
+
+
+class FilteringConfig(BaseModel):
+    enabled: bool = True
+    model: str = "deepseek-chat"
+    fail_open: bool = True
 
 
 class AppConfig(BaseModel):
@@ -96,7 +95,9 @@ class AppConfig(BaseModel):
     email: EmailConfig = EmailConfig()
     health: HealthConfig = HealthConfig()
     dedup: DedupConfig = DedupConfig()
-    schedule: ScheduleConfig = ScheduleConfig()
+    discovery: DiscoveryConfig = DiscoveryConfig()
+    extraction: ExtractionConfig = ExtractionConfig()
+    filtering: FilteringConfig = FilteringConfig()
     state_dir: str = "data"
     lookback_hours: int = 24
 
