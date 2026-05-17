@@ -56,7 +56,6 @@ def instantiate_source(
         )
     if source_id not in SOURCE_REGISTRY:
         raise ValueError(f"Unknown source: {source_id}")
-    return SOURCE_REGISTRY[source_id]()
 
 
 def is_source_enabled(source_id: str, config: AppConfig) -> bool:

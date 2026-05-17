@@ -38,13 +38,17 @@ def cli(ctx: click.Context, config: str, verbose: bool) -> None:
 @cli.command()
 @click.option("--model", "-m", help="Override LLM model for this run")
 @click.option("--dry-run", is_flag=True, help="Generate HTML but don't send email")
+@click.option("--topic", "-t", default=None, help="Focus entire digest on a specific topic")
 @click.pass_context
-def send(ctx: click.Context, model: str | None, dry_run: bool) -> None:
+def send(ctx: click.Context, model: str | None, dry_run: bool, topic: str | None) -> None:
     """Full pipeline: fetch, web search, rank, format, and send digest email."""
     from newsletter_agent.pipeline import Pipeline
 
     config = ctx.obj["config"]
-    pipeline = Pipeline(config, model_override=model)
+    pipeline = Pipeline(config, model_override=model, topic=topic)
+
+    if topic:
+        click.echo(f"Topic focus: {topic}")
     d = pipeline.run_send(dry_run=dry_run)
 
     if dry_run:

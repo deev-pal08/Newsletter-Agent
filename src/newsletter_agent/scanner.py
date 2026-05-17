@@ -40,11 +40,45 @@ User profile:
 
 Interest areas: {interests}"""
 
+TOPIC_QUERY_GEN_PROMPT = """\
+You are a search query generator for a deep-dive newsletter on a specific topic.
+
+Topic: "{topic}"
+
+Generate exactly {num_queries} web search queries that collectively provide \
+comprehensive coverage of this topic. Each query MUST target a different \
+angle — no two queries should return similar results.
+
+Required angles (pick {num_queries} from these, prioritize the first ones):
+1. Breaking news and recent incidents involving "{topic}"
+2. Academic research papers and preprints on "{topic}"
+3. Open-source tools and frameworks for testing/exploiting "{topic}"
+4. Defensive techniques and mitigations against "{topic}"
+5. Bug bounty reports and real-world case studies of "{topic}"
+6. Conference talks and presentations about "{topic}" (Black Hat, DEF CON, etc.)
+7. Industry standards and guidelines related to "{topic}" (OWASP, NIST, MITRE)
+8. Tutorials, walkthroughs, and hands-on labs for "{topic}"
+9. CVEs and vulnerability disclosures related to "{topic}"
+10. Expert blog posts and opinion pieces on "{topic}"
+
+Rules:
+- ALL queries must be about "{topic}" — zero off-topic queries
+- Be specific: use technical terms, tool names, framework names where relevant
+- Vary phrasing: don't start every query with the same words
+- Include {year} in each query for recency
+- Keep each query under 15 words
+- Return ONLY a JSON array of strings, no explanation
+
+User profile (for context on expertise level):
+{about_me}"""
+
 
 def _generate_queries_llm(
     about_me: str,
     interests: list[str],
     num_queries: int = 5,
+    topic: str | None = None,
+    model: str = "deepseek-v4-flash",
 ) -> list[str] | None:
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
@@ -56,19 +90,28 @@ def _generate_queries_llm(
     )
 
     year = datetime.now(UTC).year
-    prompt = QUERY_GEN_PROMPT.format(
-        num_queries=num_queries,
-        year=year,
-        about_me=about_me or "Not provided",
-        interests=", ".join(interests) if interests else "general technology",
-    )
+    if topic:
+        prompt = TOPIC_QUERY_GEN_PROMPT.format(
+            topic=topic,
+            num_queries=num_queries,
+            year=year,
+            about_me=about_me or "Not provided",
+        )
+    else:
+        prompt = QUERY_GEN_PROMPT.format(
+            num_queries=num_queries,
+            year=year,
+            about_me=about_me or "Not provided",
+            interests=", ".join(interests) if interests else "general technology",
+        )
 
     try:
         response = client.chat.completions.create(
-            model="deepseek-v4-flash",
+            model=model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1024,
+            max_tokens=2048,
             temperature=0.7,
+            response_format={"type": "json_object"},
         )
         text = response.choices[0].message.content or ""
         text = text.strip()
@@ -80,7 +123,15 @@ def _generate_queries_llm(
                 text = text[:-3]
             text = text.strip()
 
-        queries: list[str] = json.loads(text)
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            queries = parsed
+        elif isinstance(parsed, dict):
+            queries = next(
+                (v for v in parsed.values() if isinstance(v, list)), [],
+            )
+        else:
+            return None
         return queries[:num_queries]
     except Exception:
         logger.warning("LLM query generation failed, using fallback", exc_info=True)
@@ -91,9 +142,27 @@ def _generate_queries_fallback(
     about_me: str,
     interests: list[str],
     num_queries: int = 5,
+    topic: str | None = None,
 ) -> list[str]:
     queries = []
     year = datetime.now(UTC).year
+
+    if topic:
+        angles = [
+            "latest news incidents",
+            "research papers preprints",
+            "open-source tools frameworks",
+            "defense mitigations techniques",
+            "bug bounty reports case studies",
+            "conference talks DEF CON Black Hat",
+            "OWASP NIST MITRE guidelines",
+            "tutorials walkthroughs labs",
+            "CVE vulnerability disclosures",
+            "expert blog posts analysis",
+        ]
+        for angle in angles[:num_queries]:
+            queries.append(f"{topic} {angle} {year}")
+        return queries[:num_queries]
 
     for interest in interests[:num_queries]:
         queries.append(f"{interest} latest news research {year}")
@@ -115,7 +184,7 @@ class ArticleScanner:
         self.config = config
         self.about_me = about_me
 
-    def search(self, report: RunReport | None = None) -> list[Article]:
+    def search(self, report: RunReport | None = None, topic: str | None = None) -> list[Article]:
         """Search the web for articles via Tavily. Returns Article objects."""
         tavily_key = os.environ.get("TAVILY_API_KEY", "")
         if not tavily_key:
@@ -128,18 +197,21 @@ class ArticleScanner:
 
         tavily = TavilyClient(api_key=tavily_key)
         discovery = self.config.discovery
-        num_queries = discovery.tavily_queries_per_scan
+        num_queries = 10 if topic else discovery.tavily_queries_per_scan
 
         queries = _generate_queries_llm(
             self.about_me,
             self.config.interests,
             num_queries=num_queries,
+            topic=topic,
+            model=self.config.filtering.model,
         )
         if queries is None:
             queries = _generate_queries_fallback(
                 self.about_me,
                 self.config.interests,
                 num_queries=num_queries,
+                topic=topic,
             )
             logger.info("Using fallback query generation")
 

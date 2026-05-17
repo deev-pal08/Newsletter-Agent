@@ -1,4 +1,4 @@
-"""Pipeline orchestrator: fetch → deduplicate → rank → format → deliver."""
+"""Pipeline orchestrator: fetch → web search → deduplicate → filter → rank → format → deliver."""
 
 from __future__ import annotations
 
@@ -24,11 +24,12 @@ logger = logging.getLogger(__name__)
 
 
 class Pipeline:
-    def __init__(self, config: AppConfig, model_override: str | None = None):
+    def __init__(self, config: AppConfig, model_override: str | None = None, topic: str | None = None):
         self.config = config
         self.state = StateStore(config.state_dir)
         self.model = model_override or config.llm.model
         self.about_me = load_about_me(config.about_me)
+        self.topic = topic
         self._ranker: ArticleRanker | None = None
         self.delivery: EmailDelivery | None = None
         self.cost = CostBreakdown()
@@ -66,16 +67,18 @@ class Pipeline:
 
         # Web article search via Tavily
         scanner = ArticleScanner(self.config, about_me=self.about_me)
-        web_articles = scanner.search(report=self.report)
+        web_articles = scanner.search(report=self.report, topic=self.topic)
         if web_articles:
             logger.info("Tavily added %d articles", len(web_articles))
             all_articles.extend(web_articles)
             self.cost.add_tavily(
-                self.config.discovery.tavily_queries_per_scan,
+                self.report.tavily_queries_ok + len(self.report.tavily_queries_failed),
                 self.config.discovery.search_depth,
             )
 
         new_articles = self._deduplicate(all_articles, self.report)
+        if self.report.dedup_semantic:
+            self.cost.add_dedup(len(all_articles))
         logger.info("Fetched %d total, %d new", len(all_articles), len(new_articles))
 
         if new_articles:
@@ -89,6 +92,7 @@ class Pipeline:
                     model=self.config.filtering.model,
                     fail_open=self.config.filtering.fail_open,
                     report=self.report,
+                    topic=self.topic,
                 )
                 self.cost.add_filter(pre_filter)
 
@@ -103,6 +107,7 @@ class Pipeline:
                 )
                 ranked = self.ranker.rank_batch(
                     new_articles, self.config.interests, self.about_me,
+                    topic=self.topic,
                 )
             self.cost.add_ranking(len(new_articles), self.model, batch=use_batch)
         else:
@@ -143,7 +148,7 @@ class Pipeline:
             self.report.delivery_skipped = "dry run"
         elif self.delivery:
             try:
-                email_id = self.delivery.send_digest(digest)
+                email_id = self.delivery.send_digest(digest, topic=self.topic)
                 digest.email_sent = True
                 digest.email_id = email_id
                 if digest.digest_id:
@@ -173,6 +178,7 @@ class Pipeline:
         )
         return batch_ranker.submit_and_poll(
             articles, self.config.interests, self.about_me,
+            topic=self.topic,
         )
 
     async def _fetch_all(
@@ -271,11 +277,13 @@ class Pipeline:
                     logger.info("OPENAI_API_KEY not set — using title similarity dedup")
                     if report is not None:
                         report.dedup_fallback = True
+                        report.dedup_fallback_reason = "OPENAI_API_KEY not set"
                         report.dedup_removed = dedup_by_url
-            except Exception:
+            except Exception as exc:
                 logger.warning("Semantic dedup failed, falling back to difflib", exc_info=True)
                 if report is not None:
                     report.dedup_fallback = True
+                    report.dedup_fallback_reason = str(exc)
                     report.dedup_removed = dedup_by_url
         elif report is not None:
             report.dedup_removed = dedup_by_url

@@ -40,11 +40,12 @@ llm:
 
 # Web article discovery (Tavily Search API)
 # LLM-generated queries search the web for fresh articles matching your profile
+# Topic mode (--topic) automatically uses 10 queries for comprehensive coverage
 discovery:
-  tavily_queries_per_scan: 5     # number of search queries per run
+  tavily_queries_per_scan: 5     # number of search queries per run (10 for topic mode)
   include_domains: []            # e.g. ["example.com", "blog.example.org"]
   exclude_domains: []            # e.g. ["pinterest.com", "quora.com"]
-  search_depth: "advanced"       # "basic" ($0.008) or "advanced" ($0.016) per search
+  search_depth: "advanced"       # "basic" (1 credit) or "advanced" (4 credits) per search
 
 # Web page extraction settings
 extraction:
@@ -74,7 +75,6 @@ state_dir: data
 # Deduplication
 # Two stages: DB history (URL + title fingerprint), then OpenAI semantic embeddings
 dedup:
-  strip_tracking_params: true
   use_semantic: true                 # semantic dedup via OpenAI embeddings
   semantic_threshold: 0.88           # cosine similarity threshold
   embedding_model: "text-embedding-3-small"

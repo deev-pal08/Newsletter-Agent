@@ -55,7 +55,6 @@ class HealthConfig(BaseModel):
 
 
 class DedupConfig(BaseModel):
-    strip_tracking_params: bool = True
     use_semantic: bool = True
     semantic_threshold: float = 0.88
     embedding_model: str = "text-embedding-3-small"

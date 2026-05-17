@@ -41,6 +41,7 @@ delivers prioritized daily digest via Resend email.
 uv run newsletter send                  # full pipeline: fetch + web search + rank + email
 uv run newsletter send --dry-run        # preview without sending
 uv run newsletter send -m claude-sonnet-4-6  # use Sonnet for ranking
+uv run newsletter send -t "Prompt Injection"  # topic-focused digest
 uv run newsletter resources             # list all resources in DB
 uv run newsletter add-resource          # manually add a resource
 uv run newsletter remove-resource <ID>  # remove a resource by DB ID
@@ -88,7 +89,7 @@ uv run mypy src/                        # type check
 
 ## Web Article Search (Tavily)
 - Every `send` run searches the web for fresh articles via Tavily Search API
-- DeepSeek V4 Flash generates 5 targeted search queries from the user's profile and interests
+- DeepSeek V4 Flash generates 5 targeted search queries from the user's profile and interests (10 queries for topic mode)
 - Falls back to keyword-based queries if DEEPSEEK_API_KEY is not set
 - Results are combined with deterministic source fetch before dedup/ranking
 - Gracefully skipped if `TAVILY_API_KEY` is not set
@@ -102,7 +103,7 @@ uv run mypy src/                        # type check
 6. Add tests in `tests/sources/test_my_source.py`
 
 ## Source IDs
-rss, reddit, web
+rss, reddit, web (Tavily articles use `web_search` as source_id but it is not a registered source type)
 
 ## Environment Variables
 - `ANTHROPIC_API_KEY` — required for ranking and web source AI fallback
@@ -120,11 +121,11 @@ rss, reddit, web
 
 ## Pipeline Stages
 1. **Fetch all** — RSS feeds, Reddit subreddits, web pages with auto-pagination (all DB-driven, no time filter)
-2. **Web article search** — Tavily searches using LLM-generated queries from user profile
+2. **Web article search** — Tavily searches using LLM-generated queries from user profile (5 normal, 10 for topic mode)
 3. **Deduplication** — URL normalization + title fingerprinting vs DB history, then OpenAI semantic embeddings for cross-source live dedup
-4. **Relevance filtering** — DeepSeek V4 Flash binary filter removes noise (batched, 100/call, fail-open)
-5. **Ranking** — Claude ranks and summarizes remaining articles (Batch API by default)
-6. **Digest** — HTML email via Resend with cost breakdown and health report
+4. **Relevance filtering** — DeepSeek V4 Flash index-based filter removes noise (batched, 50/call, fail-open). Topic mode filters strictly to the specified topic.
+5. **Ranking** — Claude ranks and summarizes remaining articles (Batch API by default). Topic mode ranks exclusively by topic relevance.
+6. **Digest** — HTML email via Resend; cost breakdown and health report are printed to the CLI
 
 ## Run Health Report
 Every `send` and `test-source` command prints a health report at the end showing:
@@ -140,18 +141,20 @@ Every `send` and `test-source` command prints a health report at the end showing
 - **3 source types**: RSS, Reddit, Web — all DB-driven, no hardcoded sources
 - **No time filtering**: Sources fetch everything, dedup handles repeats — safe for infrequent runs
 - **Auto-pagination**: Web sources follow "next page" links up to `max_pages` depth (default 3)
+- **Topic-focused digests**: `--topic` flag threads through scanner, filter, ranker, and email for single-topic deep dives
 - **SQLite state**: WAL mode, auto-migrates from legacy state.json
 - **Two-stage dedup**: DB history (URL + title fingerprint) removes previously seen articles, then OpenAI semantic embeddings catch cross-source duplicates in the live batch
-- **LLM-generated search queries**: DeepSeek V4 Flash creates 5 targeted Tavily queries from user profile
+- **LLM-generated search queries**: DeepSeek V4 Flash creates targeted Tavily queries from user profile (5 normal, 10 for topic mode)
+- **Index-based relevance filtering**: DeepSeek V4 Flash returns indices of relevant articles (batched at 50/call, fail-open)
 - **Source health**: Auto-disables sources after 3 consecutive failures, 24h retry cooldown
 - **Digest history**: Browse past digests with search, date filters, and detail view
 - **Batch API**: 50% cheaper ranking via Claude Batch API (default mode)
 - **Cross-platform scheduling**: Daily jobs on macOS (launchd), Linux (cron), Windows (Task Scheduler)
 - **User profile**: AboutMe.md drives personalized ranking and article search
 - **DB-backed resources**: All RSS feeds, subreddits, web pages stored in SQLite
-- **Web source (AI-assisted)**: Tiered extraction: JSON → RSS → Jina → Firecrawl → HTML → Claude Haiku AI fallback
-- **Run health report**: Every command prints source/feed/API success/failure summary
-- **Cost tracking**: Per-run cost estimates stored with each digest
+- **Tiered web extraction**: JSON API → RSS autodiscovery → Jina Reader → Firecrawl → HTML → Claude Haiku AI fallback
+- **Run health report**: `send` and `test-source` commands print source/feed/API success/failure summary
+- **Cost tracking**: Per-run cost estimates (Tavily credits + DeepSeek + Claude + OpenAI) stored with each digest
 - **Permanent article history**: `seen_articles` table is never pruned — full read history
 - **Auto-load .env**: python-dotenv loads API keys automatically
 - **Hardcoded API base URLs**: All API clients (Anthropic, OpenAI, DeepSeek) use explicit base_url

@@ -49,18 +49,6 @@ class Article(BaseModel):
         return title_fingerprint(self.title)
 
 
-class SourceHealth(BaseModel):
-    """Health status of a data source."""
-
-    source_id: str
-    last_fetch: datetime | None = None
-    last_success: datetime | None = None
-    consecutive_errors: int = 0
-    total_articles_fetched: int = 0
-    last_error: str | None = None
-    auto_disabled: bool = False
-
-
 class Digest(BaseModel):
     """A complete digest ready for delivery."""
 

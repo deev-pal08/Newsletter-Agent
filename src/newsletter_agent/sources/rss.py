@@ -30,7 +30,6 @@ class RSSSource(BaseSource):
 
     async def fetch(
         self,
-        since: datetime | None = None,
         report: RunReport | None = None,
     ) -> list[Article]:
         articles: list[Article] = []

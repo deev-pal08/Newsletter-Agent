@@ -78,13 +78,13 @@ def _parse_time(time_str: str) -> tuple[int, int]:
     return int(parts[0]), int(parts[1])
 
 
-def _find_newsletter_bin() -> str:
+def _find_newsletter_bin() -> list[str]:
     which = shutil.which("newsletter")
     if which:
-        return which
+        return [which]
     uv = shutil.which("uv")
     if uv:
-        return f"{uv} run newsletter"
+        return [uv, "run", "newsletter"]
     raise FileNotFoundError(
         "Cannot find 'newsletter' or 'uv' binary. "
         "Make sure the package is installed."
@@ -142,7 +142,7 @@ def _install_launchd(hour: int, minute: int, config_path: str) -> str:
     working_dir, log_dir, path_env = _get_env()
     config_abs = str(Path(config_path).resolve())
 
-    args = [newsletter_bin, "send", "--config", config_abs]
+    args = [*newsletter_bin, "send", "--config", config_abs]
     content = PLIST_TEMPLATE.format(
         label="com.newsletter-agent",
         program_args=_format_plist_args(args),
@@ -169,10 +169,11 @@ def _install_cron(hour: int, minute: int, config_path: str) -> str:
     working_dir, log_dir, _ = _get_env()
     config_abs = str(Path(config_path).resolve())
     log_path = f"{log_dir}/newsletter-cron.log"
+    bin_str = " ".join(newsletter_bin)
 
     cron_line = (
         f"{minute} {hour} * * * "
-        f"cd {working_dir} && {newsletter_bin} send -c {config_abs} "
+        f"cd {working_dir} && {bin_str} send -c {config_abs} "
         f">> {log_path} 2>&1"
     )
 
@@ -265,7 +266,8 @@ def _install_schtasks(hour: int, minute: int, config_path: str) -> str:
     log_path = f"{log_dir}\\newsletter-send.log"
     time_str = f"{hour:02d}:{minute:02d}"
 
-    command = _build_task_command(newsletter_bin, config_abs)
+    bin_str = " ".join(newsletter_bin)
+    command = _build_task_command(bin_str, config_abs)
 
     # Clean up any legacy batch tasks
     for legacy in ["NewsletterAgent-Submit", "NewsletterAgent-Collect"]:

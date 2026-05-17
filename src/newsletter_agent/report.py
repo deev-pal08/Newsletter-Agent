@@ -43,6 +43,7 @@ class RunReport:
     dedup_removed: int = 0
     dedup_semantic: bool = False
     dedup_fallback: bool = False
+    dedup_fallback_reason: str | None = None
     dedup_skipped: str | None = None
 
     # Delivery
@@ -170,8 +171,11 @@ class RunReport:
         if self.dedup_skipped:
             lines.append(f"  Dedup:     {self.dedup_skipped}")
         elif self.dedup_fallback:
+            reason = ""
+            if self.dedup_fallback_reason:
+                reason = f" ({self.dedup_fallback_reason})"
             lines.append(
-                f"  Dedup:     fell back to title similarity, "
+                f"  Dedup:     fell back to title similarity{reason}, "
                 f"removed {self.dedup_removed}"
             )
         elif self.dedup_semantic:

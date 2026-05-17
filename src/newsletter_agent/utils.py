@@ -1,11 +1,10 @@
-"""Utility functions for URL normalization, title similarity, and semantic dedup."""
+"""Utility functions for URL normalization and semantic dedup."""
 
 from __future__ import annotations
 
 import hashlib
 import os
 import re
-from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -42,15 +41,6 @@ def title_fingerprint(title: str) -> str:
     fp = re.sub(r"[^\w\s]", "", fp)
     fp = re.sub(r"\s+", " ", fp).strip()
     return fp
-
-
-def titles_similar(a: str, b: str, threshold: float = 0.85) -> bool:
-    """Check if two titles are similar enough to be considered duplicates."""
-    fp_a = title_fingerprint(a)
-    fp_b = title_fingerprint(b)
-    if not fp_a or not fp_b:
-        return False
-    return SequenceMatcher(None, fp_a, fp_b).ratio() >= threshold
 
 
 # ---------------------------------------------------------------------------
@@ -102,12 +92,19 @@ def compute_embeddings_batch(
     if uncached_indices:
         client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
         uncached_titles = [titles[i] for i in uncached_indices]
-        response = client.embeddings.create(
-            model=model,
-            input=uncached_titles,
-        )
+
+        EMBED_BATCH = 2048
+        all_embeddings: list[Any] = []
+        for start in range(0, len(uncached_titles), EMBED_BATCH):
+            chunk = uncached_titles[start : start + EMBED_BATCH]
+            response = client.embeddings.create(
+                model=model,
+                input=chunk,
+            )
+            all_embeddings.extend(response.data)
+
         for j, idx in enumerate(uncached_indices):
-            vec = np.array(response.data[j].embedding, dtype=np.float32)
+            vec = np.array(all_embeddings[j].embedding, dtype=np.float32)
             results[idx] = vec
             if cache_enabled and state_store is not None:
                 state_store.cache_embedding(

@@ -33,13 +33,13 @@ def test_filter_no_api_key() -> None:
 
 
 def test_filter_removes_irrelevant() -> None:
-    """Filter should remove articles marked as irrelevant."""
+    """Filter should remove articles not in the returned indices."""
     articles = _make_articles(4)
-    verdicts = [True, False, True, False]
+    keep_indices = [0, 2]
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = json.dumps(verdicts)
+    mock_response.choices[0].message.content = json.dumps(keep_indices)
 
     with (
         patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}),
@@ -56,14 +56,14 @@ def test_filter_removes_irrelevant() -> None:
     assert result[1].title == "Article 2"
 
 
-def test_filter_keeps_all_on_all_true() -> None:
-    """Filter should keep all articles when all are relevant."""
+def test_filter_keeps_all_when_all_indices_returned() -> None:
+    """Filter should keep all articles when all indices are returned."""
     articles = _make_articles(3)
-    verdicts = [True, True, True]
+    keep_indices = [0, 1, 2]
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = json.dumps(verdicts)
+    mock_response.choices[0].message.content = json.dumps(keep_indices)
 
     with (
         patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}),
@@ -111,14 +111,14 @@ def test_filter_fail_closed_on_error() -> None:
             filter_articles(articles, interests=["security"], fail_open=False)
 
 
-def test_filter_mismatched_verdicts_adjusts() -> None:
-    """If verdict count is off by 1-2, pad with True and keep going."""
+def test_filter_ignores_out_of_range_indices() -> None:
+    """Out-of-range indices should be silently ignored."""
     articles = _make_articles(4)
-    verdicts = [True, False]  # 2 short — gets padded with [True, True]
+    keep_indices = [0, 2, 99, -1]
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = json.dumps(verdicts)
+    mock_response.choices[0].message.content = json.dumps(keep_indices)
 
     with (
         patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}),
@@ -130,8 +130,36 @@ def test_filter_mismatched_verdicts_adjusts() -> None:
 
         result = filter_articles(articles, interests=["security"])
 
-    # [True, False, True(pad), True(pad)] → keeps 3 of 4
-    assert len(result) == 3
+    assert len(result) == 2
+    assert result[0].title == "Article 0"
+    assert result[1].title == "Article 2"
+
+
+def test_filter_topic_mode() -> None:
+    """Topic mode should pass the topic to the filter."""
+    articles = _make_articles(3)
+    keep_indices = [1]
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = json.dumps(keep_indices)
+
+    with (
+        patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}),
+        patch("newsletter_agent.ranking.filter.OpenAI") as mock_openai,
+    ):
+        mock_client = MagicMock()
+        mock_openai.return_value = mock_client
+        mock_client.chat.completions.create.return_value = mock_response
+
+        result = filter_articles(
+            articles, interests=["security"], topic="Prompt Injection",
+        )
+
+    assert len(result) == 1
+    assert result[0].title == "Article 1"
+    prompt_used = mock_client.chat.completions.create.call_args[1]["messages"][0]["content"]
+    assert "Prompt Injection" in prompt_used
 
 
 def test_filter_empty_articles() -> None:

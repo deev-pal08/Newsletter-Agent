@@ -13,6 +13,7 @@ import anthropic
 from newsletter_agent.models import Article, Priority
 from newsletter_agent.ranking.prompts import (
     RANKING_SYSTEM_PROMPT,
+    RANKING_TOPIC_USER_PROMPT_TEMPLATE,
     RANKING_USER_PROMPT_TEMPLATE,
     RANKING_USER_PROMPT_WITH_PROFILE_TEMPLATE,
     format_articles_for_ranking,
@@ -45,9 +46,17 @@ def _build_user_prompt(
     articles: list[Article],
     user_interests: list[str],
     user_profile: str = "",
+    topic: str | None = None,
 ) -> str:
     article_dicts = _build_article_dicts(articles)
     articles_text = format_articles_for_ranking(article_dicts)
+    if topic:
+        return RANKING_TOPIC_USER_PROMPT_TEMPLATE.format(
+            topic=topic,
+            profile=user_profile or "Not provided",
+            count=len(articles),
+            articles_text=articles_text,
+        )
     if user_profile:
         return RANKING_USER_PROMPT_WITH_PROFILE_TEMPLATE.format(
             profile=user_profile,
@@ -119,6 +128,7 @@ class ArticleRanker:
         articles: list[Article],
         user_interests: list[str],
         user_profile: str = "",
+        topic: str | None = None,
     ) -> list[Article]:
         if not articles:
             return []
@@ -126,7 +136,7 @@ class ArticleRanker:
         all_ranked: list[Article] = []
         for i in range(0, len(articles), self.max_batch_size):
             batch = articles[i : i + self.max_batch_size]
-            ranked = self._rank_single_batch(batch, user_interests, user_profile)
+            ranked = self._rank_single_batch(batch, user_interests, user_profile, topic=topic)
             all_ranked.extend(ranked)
         return all_ranked
 
@@ -135,8 +145,9 @@ class ArticleRanker:
         articles: list[Article],
         user_interests: list[str],
         user_profile: str = "",
+        topic: str | None = None,
     ) -> list[Article]:
-        user_prompt = _build_user_prompt(articles, user_interests, user_profile)
+        user_prompt = _build_user_prompt(articles, user_interests, user_profile, topic=topic)
 
         try:
             if self.prompt_caching:
@@ -195,6 +206,7 @@ class BatchRanker:
         articles: list[Article],
         user_interests: list[str],
         user_profile: str = "",
+        topic: str | None = None,
     ) -> str:
         """Submit articles for batch ranking. Returns the batch ID."""
         if self.prompt_caching:
@@ -211,7 +223,7 @@ class BatchRanker:
         requests = []
         for i in range(0, len(articles), self.max_batch_size):
             chunk = articles[i : i + self.max_batch_size]
-            user_prompt = _build_user_prompt(chunk, user_interests, user_profile)
+            user_prompt = _build_user_prompt(chunk, user_interests, user_profile, topic=topic)
             requests.append({
                 "custom_id": f"ranking-chunk-{i}",
                 "params": {
@@ -251,11 +263,12 @@ class BatchRanker:
         articles: list[Article],
         user_interests: list[str],
         user_profile: str = "",
+        topic: str | None = None,
         poll_interval: int = 30,
         max_wait: int = 3600,
     ) -> list[Article]:
         """Submit, poll until complete, and return ranked articles."""
-        batch_id = self.submit(articles, user_interests, user_profile)
+        batch_id = self.submit(articles, user_interests, user_profile, topic=topic)
         logger.info("Waiting for batch %s to complete...", batch_id)
 
         elapsed = 0

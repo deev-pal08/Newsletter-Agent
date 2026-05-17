@@ -11,8 +11,6 @@ from typing import Any
 from newsletter_agent.models import Article, Digest
 from newsletter_agent.utils import normalize_url, title_fingerprint
 
-SCHEMA_VERSION = 3
-
 CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS seen_articles (
     url TEXT PRIMARY KEY,
@@ -46,18 +44,6 @@ CREATE TABLE IF NOT EXISTS digests (
     cost_breakdown TEXT
 );
 
-CREATE TABLE IF NOT EXISTS batch_jobs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    batch_id TEXT UNIQUE,
-    status TEXT DEFAULT 'submitted',
-    created_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    articles_json TEXT,
-    interests_json TEXT,
-    digest_id INTEGER,
-    error TEXT
-);
-
 CREATE TABLE IF NOT EXISTS resources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -85,7 +71,6 @@ CREATE TABLE IF NOT EXISTS embeddings (
 CREATE INDEX IF NOT EXISTS idx_seen_normalized ON seen_articles(normalized_url);
 CREATE INDEX IF NOT EXISTS idx_seen_fingerprint ON seen_articles(title_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_digests_date ON digests(date);
-CREATE INDEX IF NOT EXISTS idx_batch_jobs_status ON batch_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_resources_source_type ON resources(source_type);
 CREATE INDEX IF NOT EXISTS idx_resources_enabled ON resources(enabled);
 """

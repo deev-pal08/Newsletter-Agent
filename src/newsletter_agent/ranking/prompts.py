@@ -62,6 +62,18 @@ Rank the following {count} items:
 
 {articles_text}"""
 
+RANKING_TOPIC_USER_PROMPT_TEMPLATE = """\
+TOPIC FOCUS: The user wants a digest focused exclusively on "{topic}".
+
+User profile:
+{profile}
+
+Rank the following {count} items based ONLY on relevance to "{topic}". \
+Articles not directly related to this topic should be ranked as \
+REFERENCE_SAVE_FOR_LATER regardless of general quality.
+
+{articles_text}"""
+
 
 def format_articles_for_ranking(articles: list[dict[str, str]]) -> str:
     """Format article list for the ranking prompt."""
