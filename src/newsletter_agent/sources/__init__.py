@@ -52,6 +52,7 @@ def instantiate_source(
             jina_enabled=config.extraction.jina_enabled,
             firecrawl_enabled=config.extraction.firecrawl_enabled,
             haiku_fallback_enabled=config.extraction.haiku_fallback_enabled,
+            max_pages=config.extraction.max_pages,
         )
     if source_id not in SOURCE_REGISTRY:
         raise ValueError(f"Unknown source: {source_id}")

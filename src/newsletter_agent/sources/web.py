@@ -64,6 +64,7 @@ class WebSource(BaseSource):
         jina_enabled: bool = True,
         firecrawl_enabled: bool = False,
         haiku_fallback_enabled: bool = True,
+        max_pages: int = 3,
     ):
         self._pages = pages
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -71,6 +72,7 @@ class WebSource(BaseSource):
         self.jina_enabled = jina_enabled
         self.firecrawl_enabled = firecrawl_enabled
         self.haiku_fallback_enabled = haiku_fallback_enabled
+        self.max_pages = max_pages
         self.pending_extractions: list[dict[str, str]] = []
 
     @property
@@ -98,15 +100,10 @@ class WebSource(BaseSource):
         ) as http:
             for page_name, page_url in self._pages.items():
                 try:
-                    page_articles, strategy = await self._extract_from_page(
-                        http, page_name, page_url, since,
+                    page_articles = await self._fetch_with_pagination(
+                        http, page_name, page_url, report,
                     )
                     articles.extend(page_articles)
-                    if report is not None:
-                        if page_articles:
-                            report.add_web_ok(page_name, strategy)
-                        else:
-                            report.add_web_failed(page_name, "no articles found")
                 except Exception as e:
                     logger.exception("WebSource failed for '%s'", page_name)
                     if report is not None:
@@ -115,46 +112,97 @@ class WebSource(BaseSource):
 
         return articles
 
+    async def _fetch_with_pagination(
+        self,
+        http: httpx.AsyncClient,
+        page_name: str,
+        page_url: str,
+        report: RunReport | None,
+    ) -> list[Article]:
+        all_articles: list[Article] = []
+        current_url = page_url
+        seen_urls: set[str] = set()
+        pages_fetched = 0
+
+        while current_url and pages_fetched < self.max_pages:
+            if current_url in seen_urls:
+                break
+            seen_urls.add(current_url)
+
+            page_articles, strategy, raw_html = await self._extract_from_page(
+                http, page_name, current_url,
+            )
+            all_articles.extend(page_articles)
+            pages_fetched += 1
+
+            if pages_fetched == 1 and report is not None:
+                if page_articles:
+                    report.add_web_ok(page_name, strategy)
+                else:
+                    report.add_web_failed(page_name, "no articles found")
+
+            if pages_fetched < self.max_pages and raw_html:
+                next_url = _find_next_page_url(raw_html, current_url)
+                if next_url and next_url != current_url:
+                    logger.debug(
+                        "  %s: following pagination → %s (page %d)",
+                        page_name, next_url, pages_fetched + 1,
+                    )
+                    current_url = next_url
+                else:
+                    break
+            else:
+                break
+
+        if pages_fetched > 1:
+            logger.info(
+                "  %s: %d articles across %d pages",
+                page_name, len(all_articles), pages_fetched,
+            )
+
+        return all_articles
+
     async def _extract_from_page(
         self,
         http: httpx.AsyncClient,
         page_name: str,
         page_url: str,
-        since: datetime | None,
-    ) -> tuple[list[Article], str]:
+    ) -> tuple[list[Article], str, str]:
+        """Extract articles from a page. Returns (articles, strategy_name, raw_html)."""
         resp = await http.get(page_url)
         resp.raise_for_status()
+        raw_html = resp.text
 
         content_type = resp.headers.get("content-type", "")
 
         # Strategy 1: JSON API response
         if "json" in content_type or resp.text.lstrip().startswith(("{", "[")):
-            articles = _try_json(resp.text, page_name, page_url, since)
+            articles = _try_json(resp.text, page_name, page_url)
             if articles:
                 logger.info("  %s: %d articles via JSON API", page_name, len(articles))
-                return articles, "JSON API"
+                return articles, "JSON API", raw_html
 
         # Strategy 2: RSS/Atom autodiscovery
         feed_url = _find_feed_link(resp.text, page_url)
         if feed_url:
-            articles = await _try_feed(http, feed_url, page_name, since)
+            articles = await _try_feed(http, feed_url, page_name)
             if articles:
                 logger.info("  %s: %d articles via RSS autodiscovery", page_name, len(articles))
-                return articles, "RSS autodiscovery"
+                return articles, "RSS autodiscovery", raw_html
 
         # Strategy 3: Jina Reader (free Markdown extraction)
         if self.jina_enabled:
-            articles = await _try_jina(http, page_name, page_url, since)
+            articles = await _try_jina(http, page_name, page_url)
             if articles:
                 logger.info("  %s: %d articles via Jina Reader", page_name, len(articles))
-                return articles, "Jina Reader"
+                return articles, "Jina Reader", raw_html
 
         # Strategy 4: Firecrawl (JS-heavy fallback)
         if self.firecrawl_enabled and os.environ.get("FIRECRAWL_API_KEY"):
-            articles = _try_firecrawl(page_name, page_url, since)
+            articles = _try_firecrawl(page_name, page_url)
             if articles:
                 logger.info("  %s: %d articles via Firecrawl", page_name, len(articles))
-                return articles, "Firecrawl"
+                return articles, "Firecrawl", raw_html
         elif self.firecrawl_enabled:
             logger.debug(
                 "  %s: FIRECRAWL_API_KEY not set — skipping Firecrawl",
@@ -162,22 +210,22 @@ class WebSource(BaseSource):
             )
 
         # Strategy 5: HTML structural extraction
-        articles = _try_html(resp.text, page_name, page_url, since)
+        articles = _try_html(resp.text, page_name, page_url)
         if articles:
             logger.info("  %s: %d articles via HTML structure", page_name, len(articles))
-            return articles, "HTML"
+            return articles, "HTML", raw_html
 
         # Strategy 6: AI fallback (Claude Haiku)
         if not self.haiku_fallback_enabled:
             logger.warning("  %s: no articles found, AI fallback disabled", page_name)
-            return [], "none"
+            return [], "none", raw_html
 
         if not self._api_key:
             logger.warning(
                 "  %s: no articles found, no API key for AI fallback",
                 page_name,
             )
-            return [], "none"
+            return [], "none", raw_html
 
         if self.defer_ai:
             content = _html_to_text(resp.text, page_url)
@@ -190,11 +238,11 @@ class WebSource(BaseSource):
                     "content": content,
                 })
                 logger.info("  %s: deferred to batch AI extraction", page_name)
-            return [], "deferred"
+            return [], "deferred", raw_html
 
-        articles = _try_ai(resp.text, page_name, page_url, since, self._api_key)
+        articles = _try_ai(resp.text, page_name, page_url, self._api_key)
         logger.info("  %s: %d articles via AI extraction", page_name, len(articles))
-        return articles, "AI fallback"
+        return articles, "AI fallback", raw_html
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +253,6 @@ def _try_json(
     text: str,
     page_name: str,
     page_url: str,
-    since: datetime | None,
 ) -> list[Article]:
     try:
         data = json.loads(text)
@@ -239,8 +286,6 @@ def _try_json(
                    "published", "pubDate", "created", "timestamp"],
         )
         published = _parse_date(date_str)
-        if since and published and published < since:
-            continue
 
         summary = _get_json_field(item, ["summary", "description", "excerpt", "abstract"]) or ""
 
@@ -297,7 +342,6 @@ async def _try_feed(
     http: httpx.AsyncClient,
     feed_url: str,
     page_name: str,
-    since: datetime | None,
 ) -> list[Article]:
     try:
         resp = await http.get(feed_url)
@@ -309,8 +353,6 @@ async def _try_feed(
     articles = []
     for entry in parsed.entries:
         published = _parse_feed_date(entry)
-        if since and published and published < since:
-            continue
         title = entry.get("title", "")
         url = entry.get("link", "")
         if not title or not url:
@@ -345,7 +387,6 @@ async def _try_jina(
     http: httpx.AsyncClient,
     page_name: str,
     page_url: str,
-    since: datetime | None,
 ) -> list[Article]:
     jina_url = f"https://r.jina.ai/{page_url}"
     try:
@@ -367,14 +408,13 @@ async def _try_jina(
         )
         return []
 
-    return _parse_markdown_articles(content, page_name, page_url, since)
+    return _parse_markdown_articles(content, page_name, page_url)
 
 
 def _parse_markdown_articles(
     markdown: str,
     page_name: str,
     page_url: str,
-    since: datetime | None,
 ) -> list[Article]:
     articles: list[Article] = []
     seen_urls: set[str] = set()
@@ -429,7 +469,6 @@ def _parse_markdown_articles(
 def _try_firecrawl(
     page_name: str,
     page_url: str,
-    since: datetime | None,
 ) -> list[Article]:
     api_key = os.environ.get("FIRECRAWL_API_KEY", "")
     if not api_key:
@@ -451,7 +490,7 @@ def _try_firecrawl(
     if not markdown or len(markdown) < 200:
         return []
 
-    return _parse_markdown_articles(markdown, page_name, page_url, since)
+    return _parse_markdown_articles(markdown, page_name, page_url)
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +501,6 @@ def _try_html(
     html: str,
     page_name: str,
     page_url: str,
-    since: datetime | None,
 ) -> list[Article]:
     soup = BeautifulSoup(html, "html.parser")
 
@@ -569,7 +607,6 @@ def _try_ai(
     html: str,
     page_name: str,
     page_url: str,
-    since: datetime | None,
     api_key: str,
 ) -> list[Article]:
     content = _html_to_text(html, page_url)
@@ -601,8 +638,6 @@ def _try_ai(
         url = urljoin(page_url, url)
 
         published = _parse_date(item.get("date"))
-        if since and published and published < since:
-            continue
 
         articles.append(Article(
             title=title,
@@ -613,6 +648,66 @@ def _try_ai(
             raw_summary=item.get("summary", ""),
         ))
     return articles
+
+
+# ---------------------------------------------------------------------------
+# Pagination: generic "next page" detection
+# ---------------------------------------------------------------------------
+
+_NEXT_LINK_TEXTS = frozenset({
+    "next", "next page", "next →", "next»", "›", "»", "→",
+    "older posts", "older entries", "older", "more",
+    "next ›", "next ▸",
+})
+
+
+def _find_next_page_url(html: str, current_url: str) -> str | None:
+    soup = BeautifulSoup(html, "html.parser")
+
+    # 1. <link rel="next"> (SEO standard)
+    link_next = soup.find("link", rel="next")
+    if link_next and isinstance(link_next, Tag) and link_next.get("href"):
+        return urljoin(current_url, str(link_next["href"]))
+
+    # 2. <a rel="next">
+    a_next = soup.find("a", rel="next")
+    if a_next and isinstance(a_next, Tag) and a_next.get("href"):
+        return urljoin(current_url, str(a_next["href"]))
+
+    # 3. Look inside pagination containers
+    for container in soup.find_all(
+        ["nav", "div", "ul"],
+        class_=re.compile(r"paginat|pager|page-nav", re.I),
+    ):
+        url = _find_next_in_container(container, current_url)
+        if url:
+            return url
+
+    # 4. Look for aria-label="next" or aria-label="Next page" anywhere
+    for a in soup.find_all("a", href=True):
+        aria = str(a.get("aria-label", "")).lower().strip()
+        if aria in ("next", "next page"):
+            href = str(a["href"])
+            if href and not href.startswith(("#", "javascript:")):
+                return urljoin(current_url, href)
+
+    return None
+
+
+def _find_next_in_container(container: Tag, current_url: str) -> str | None:
+    for a in container.find_all("a", href=True):
+        text = a.get_text(strip=True).lower()
+        classes = " ".join(a.get("class", [])).lower()
+        aria = str(a.get("aria-label", "")).lower().strip()
+
+        if "prev" in classes or "prev" in aria:
+            continue
+
+        if text in _NEXT_LINK_TEXTS or aria in ("next", "next page"):
+            href = str(a["href"])
+            if href and not href.startswith(("#", "javascript:")):
+                return urljoin(current_url, href)
+    return None
 
 
 # ---------------------------------------------------------------------------

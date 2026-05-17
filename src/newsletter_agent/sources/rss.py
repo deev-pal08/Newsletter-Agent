@@ -42,8 +42,6 @@ class RSSSource(BaseSource):
                     parsed = feedparser.parse(resp.text)
                     for entry in parsed.entries:
                         published = _parse_published(entry)
-                        if since and published and published < since:
-                            continue
                         articles.append(Article(
                             title=entry.get("title", "Untitled"),
                             url=entry.get("link", ""),

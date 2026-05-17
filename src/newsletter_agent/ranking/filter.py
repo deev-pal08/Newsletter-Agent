@@ -102,7 +102,7 @@ def filter_articles(
     articles: list[Article],
     interests: list[str],
     about_me: str = "",
-    model: str = "deepseek-chat",
+    model: str = "deepseek-v4-flash",
     fail_open: bool = True,
     report: RunReport | None = None,
 ) -> list[Article]:

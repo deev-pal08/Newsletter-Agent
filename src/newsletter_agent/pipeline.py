@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from newsletter_agent.config import AppConfig, load_about_me
 from newsletter_agent.cost_tracker import CostBreakdown
@@ -59,11 +59,10 @@ class Pipeline:
         self.cost = CostBreakdown()
         self.report = RunReport()
         start = time.monotonic()
-        since = datetime.now(UTC) - timedelta(hours=self.config.lookback_hours)
         sources = get_enabled_sources(self.config, self.state)
 
         logger.info("Fetching from %d sources...", len(sources))
-        all_articles = asyncio.run(self._fetch_all(sources, since, self.report))
+        all_articles = asyncio.run(self._fetch_all(sources, self.report))
 
         # Web article search via Tavily
         scanner = ArticleScanner(self.config, about_me=self.about_me)
@@ -177,7 +176,7 @@ class Pipeline:
         )
 
     async def _fetch_all(
-        self, sources: list, since: datetime,  # type: ignore[type-arg]
+        self, sources: list,  # type: ignore[type-arg]
         report: RunReport | None = None,
     ) -> list[Article]:
         # Filter out unhealthy sources
@@ -200,7 +199,7 @@ class Pipeline:
                 continue
             healthy_sources.append(source)
 
-        tasks = [source.fetch(since=since, report=report) for source in healthy_sources]
+        tasks = [source.fetch(report=report) for source in healthy_sources]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         articles: list[Article] = []
         for source, result in zip(healthy_sources, results, strict=True):

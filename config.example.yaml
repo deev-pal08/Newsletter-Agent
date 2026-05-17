@@ -1,76 +1,63 @@
 # Newsletter Agent Configuration
 
-# Your profile (used by Claude for personalized ranking & source discovery)
+# Your profile (used for personalized ranking and article discovery)
 # Copy AboutMe.example.md to AboutMe.md and fill in your details
 about_me: AboutMe.md
 
-# Your research interests (used by Claude to prioritize articles)
+# Your interests (used by the LLM to prioritize articles)
+# Examples for different domains:
+#   Security: web security, vulnerability research, bug bounty
+#   AI/ML: machine learning, LLM fine-tuning, AI agents
+#   Finance: quantitative trading, risk modeling, fintech
+#   Design: UI/UX research, design systems, accessibility
 interests:
   - web security
   - vulnerability research
-  - LLM security and jailbreaks
-  - AI agents and autonomous systems
-  - exploit development
-  - fuzzing
-  - bug bounty
+  - AI agents
+  - machine learning
 
-# Toggle sources on/off (built-in source types)
-# RSS feeds and subreddits are managed in the database — use:
+# Toggle sources on/off
+# RSS feeds, subreddits, and web pages are managed in the database:
 #   newsletter resources       # list all resources
 #   newsletter add-resource    # add a resource
 #   newsletter remove-resource # remove a resource
-#   newsletter scan            # discover new resources via web search
 sources:
   rss:
     enabled: true
-  arxiv:
-    enabled: true
-    categories:
-      - cs.CR
-      - cs.AI
-      - cs.LG
-    max_results: 50
-  hackernews:
-    enabled: true
-    min_score: 50
-    max_stories: 100
-  github_trending:
-    enabled: true
   reddit:
     enabled: true
-  hackerone:
-    enabled: false    # enable once GraphQL access is confirmed
-  oss_security:
+  web:
     enabled: true
-  conferences:
-    enabled: false    # enable closer to conference season
 
-# LLM settings
+# LLM settings (Claude API for ranking)
 llm:
-  model: claude-sonnet-4-6       # recommended for quality ranking
-  # model: claude-haiku-4-5      # cheaper alternative (~$1.35/month)
+  model: claude-haiku-4-5        # cheap default (~$0.07/run with Batch API)
+  # model: claude-sonnet-4-6     # better quality (~$0.14/run with Batch API)
   api_key_env: ANTHROPIC_API_KEY
   max_articles_per_batch: 100
   use_batch: true                # Batch API is 50% cheaper (default: on)
   prompt_caching: true           # cache system prompt for 90% input savings
 
-# Source discovery (Tavily Search API)
+# Web article discovery (Tavily Search API)
+# LLM-generated queries search the web for fresh articles matching your profile
 discovery:
-  tavily_queries_per_scan: 2
-  include_domains: []            # e.g. ["portswigger.net", "nvd.nist.gov"]
+  tavily_queries_per_scan: 5     # number of search queries per run
+  include_domains: []            # e.g. ["example.com", "blog.example.org"]
   exclude_domains: []            # e.g. ["pinterest.com", "quora.com"]
   search_depth: "advanced"       # "basic" ($0.008) or "advanced" ($0.016) per search
 
-# Article extraction settings
+# Web page extraction settings
 extraction:
   jina_enabled: true             # free Markdown extraction via r.jina.ai
   firecrawl_enabled: false       # set true and add FIRECRAWL_API_KEY for JS sites
   haiku_fallback_enabled: true   # Claude Haiku as last resort
+  max_pages: 3                   # pagination depth per web resource (follows "next" links)
 
 # Relevance filtering (DeepSeek V4 Flash pre-filter)
+# Removes noise before expensive Claude ranking
 filtering:
   enabled: true
-  model: "deepseek-chat"
+  model: "deepseek-v4-flash"
   fail_open: true                # if filter errors, pass all articles through
 
 # Email delivery via Resend
@@ -82,33 +69,19 @@ email:
   api_key_env: RESEND_API_KEY
 
 # General settings
-lookback_hours: 24
 state_dir: data
 
-# Deduplication settings (v2)
+# Deduplication
+# Two stages: DB history (URL + title fingerprint), then OpenAI semantic embeddings
 dedup:
-  fuzzy_url: true                    # normalize URLs before comparing
-  title_similarity_threshold: 0.85   # difflib fallback threshold
+  strip_tracking_params: true
   use_semantic: true                 # semantic dedup via OpenAI embeddings
   semantic_threshold: 0.88           # cosine similarity threshold
   embedding_model: "text-embedding-3-small"
   cache_embeddings: true             # store in SQLite to avoid re-embedding
-  strip_query_params:                # query params removed during normalization
-    - utm_source
-    - utm_medium
-    - utm_campaign
-    - utm_content
-    - utm_term
-    - ref
-    - source
 
-# Source health monitoring (v2)
+# Source health monitoring
 health:
   auto_disable: true                 # auto-skip sources with repeated failures
   max_consecutive_failures: 3        # failures before auto-disabling
   retry_after_hours: 24              # retry disabled sources after this cooldown
-
-# Scheduling (v2)
-schedule:
-  time: "08:00"                      # daily digest time (HH:MM)
-  timezone: UTC

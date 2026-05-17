@@ -4,22 +4,22 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from newsletter_agent.scanner import ArticleScanner, _generate_search_queries
+from newsletter_agent.scanner import ArticleScanner, _generate_queries_fallback
 
 
-def test_generate_search_queries_default() -> None:
-    queries = _generate_search_queries("about me", ["security", "AI", "fuzzing"], num_queries=3)
+def test_generate_queries_fallback_default() -> None:
+    queries = _generate_queries_fallback("about me", ["security", "AI", "fuzzing"], num_queries=3)
     assert len(queries) == 3
     assert "security" in queries[0]
 
 
-def test_generate_search_queries_single_interest() -> None:
-    queries = _generate_search_queries("about me", ["security"], num_queries=3)
+def test_generate_queries_fallback_single_interest() -> None:
+    queries = _generate_queries_fallback("about me", ["security"], num_queries=3)
     assert len(queries) == 3
 
 
-def test_generate_search_queries_many_interests() -> None:
-    queries = _generate_search_queries("", ["a", "b", "c", "d", "e"], num_queries=2)
+def test_generate_queries_fallback_many_interests() -> None:
+    queries = _generate_queries_fallback("", ["a", "b", "c", "d", "e"], num_queries=2)
     assert len(queries) == 2
 
 
@@ -60,7 +60,7 @@ def test_scanner_returns_articles() -> None:
     }
 
     with (
-        patch.dict("os.environ", {"TAVILY_API_KEY": "test-key"}),
+        patch.dict("os.environ", {"TAVILY_API_KEY": "test-key", "DEEPSEEK_API_KEY": ""}),
         patch("newsletter_agent.scanner.TavilyClient") as mock_tavily_cls,
     ):
         mock_tavily = MagicMock()
@@ -98,7 +98,7 @@ def test_scanner_deduplicates_urls() -> None:
     }
 
     with (
-        patch.dict("os.environ", {"TAVILY_API_KEY": "test-key"}),
+        patch.dict("os.environ", {"TAVILY_API_KEY": "test-key", "DEEPSEEK_API_KEY": ""}),
         patch("newsletter_agent.scanner.TavilyClient") as mock_tavily_cls,
     ):
         mock_tavily = MagicMock()
@@ -121,7 +121,7 @@ def test_scanner_handles_tavily_error() -> None:
     config.discovery.exclude_domains = []
 
     with (
-        patch.dict("os.environ", {"TAVILY_API_KEY": "test-key"}),
+        patch.dict("os.environ", {"TAVILY_API_KEY": "test-key", "DEEPSEEK_API_KEY": ""}),
         patch("newsletter_agent.scanner.TavilyClient") as mock_tavily_cls,
     ):
         mock_tavily = MagicMock()

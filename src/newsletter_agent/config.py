@@ -63,7 +63,7 @@ class DedupConfig(BaseModel):
 
 
 class DiscoveryConfig(BaseModel):
-    tavily_queries_per_scan: int = 2
+    tavily_queries_per_scan: int = 5
     include_domains: list[str] = Field(default_factory=list)
     exclude_domains: list[str] = Field(default_factory=list)
     search_depth: str = "advanced"
@@ -73,11 +73,12 @@ class ExtractionConfig(BaseModel):
     jina_enabled: bool = True
     firecrawl_enabled: bool = False
     haiku_fallback_enabled: bool = True
+    max_pages: int = 3
 
 
 class FilteringConfig(BaseModel):
     enabled: bool = True
-    model: str = "deepseek-chat"
+    model: str = "deepseek-v4-flash"
     fail_open: bool = True
 
 
@@ -99,7 +100,6 @@ class AppConfig(BaseModel):
     extraction: ExtractionConfig = ExtractionConfig()
     filtering: FilteringConfig = FilteringConfig()
     state_dir: str = "data"
-    lookback_hours: int = 24
 
 
 def load_config(path: str | Path) -> AppConfig:
