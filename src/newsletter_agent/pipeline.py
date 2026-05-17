@@ -20,6 +20,8 @@ from newsletter_agent.sources import get_enabled_sources
 from newsletter_agent.state.store import StateStore
 from newsletter_agent.utils import find_semantic_duplicates
 
+import anthropic
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +45,57 @@ class Pipeline:
                 )
             except ValueError:
                 self.delivery = None
+
+    def _generate_title(self, digest: Digest) -> str:
+        """Use LLM to generate a short digest title from the content."""
+        sample_titles = [a.title for a in digest.articles[:30]]
+        titles_text = "\n".join(f"- {t}" for t in sample_titles)
+
+        if self.topic:
+            prompt = (
+                f'The user searched for articles about: "{self.topic}"\n\n'
+                f"Here are some article titles from the digest:\n{titles_text}\n\n"
+                "Generate a short, generic digest title (2-5 words) that captures "
+                "the theme of the search topic. The title should be broad and "
+                "descriptive, not specific to any single article. "
+                "Do NOT include specific product names, company names, or CVE numbers. "
+                "Examples of good titles: 'Prompt Injection Methodologies', "
+                "'Cloud Security Digest', 'AI Agent Research'.\n"
+                "Return ONLY the title, nothing else."
+            )
+        else:
+            prompt = (
+                f"User profile:\n{self.about_me or 'Not provided'}\n\n"
+                f"User interests: {', '.join(self.config.interests) if self.config.interests else 'general'}\n\n"
+                f"Here are some article titles from the digest:\n{titles_text}\n\n"
+                "Generate a short, generic digest title (2-5 words) that captures "
+                "the overall theme of this user's interests and digest content. "
+                "The title should be broad like 'Security & AI Digest' or "
+                "'Web Security Research' — not specific to any single article. "
+                "Do NOT include specific product names, company names, or CVE numbers. "
+                "Return ONLY the title, nothing else."
+            )
+
+        try:
+            client = anthropic.Anthropic(
+                api_key=self.config.llm.api_key,
+                base_url="https://api.anthropic.com",
+            )
+            response = client.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=30,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            title = response.content[0].text.strip().strip('"').strip("'")
+            if not title.lower().endswith("digest"):
+                title += " Digest"
+            logger.info("Generated digest title: %s", title)
+            return title
+        except Exception:
+            logger.warning("Title generation failed, using fallback", exc_info=True)
+            if self.topic:
+                return f"{self.topic} Digest"
+            return "Intelligence Digest"
 
     @property
     def ranker(self) -> ArticleRanker:
@@ -138,9 +191,10 @@ class Pipeline:
     def run_send(self, dry_run: bool = False) -> Digest:
         """Full pipeline: fetch, search web, rank, format, deliver."""
         digest = self.run_digest()
+        title = self._generate_title(digest)
 
         if dry_run:
-            html = render_digest_html(digest)
+            html = render_digest_html(digest, title=title)
             out = f"data/digest_preview_{digest.date.strftime('%Y%m%d_%H%M%S')}.html"
             with open(out, "w") as f:
                 f.write(html)
@@ -148,7 +202,7 @@ class Pipeline:
             self.report.delivery_skipped = "dry run"
         elif self.delivery:
             try:
-                email_id = self.delivery.send_digest(digest, topic=self.topic)
+                email_id = self.delivery.send_digest(digest, title=title)
                 digest.email_sent = True
                 digest.email_id = email_id
                 if digest.digest_id:

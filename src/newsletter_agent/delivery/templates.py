@@ -23,7 +23,7 @@ DIGEST_TEMPLATE = Template("""\
 
 <!-- Header -->
 <tr><td style="background:#1a1a2e;padding:24px 32px;">
-  <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:600;">Security &amp; AI Intelligence Digest</h1>
+  <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:600;">{{ title }}</h1>
   <p style="color:#a0a0b0;margin:8px 0 0;font-size:14px;">{{ date }} &middot; {{ total_fetched }} scanned &middot; {{ total_after_dedup }} new &middot; {{ article_count }} ranked</p>
 </td></tr>
 
@@ -122,8 +122,9 @@ DIGEST_TEMPLATE = Template("""\
 """)
 
 
-def render_digest_html(digest: Digest) -> str:
+def render_digest_html(digest: Digest, title: str = "Intelligence Digest") -> str:
     return DIGEST_TEMPLATE.render(
+        title=title,
         date=digest.date.strftime("%B %d, %Y"),
         total_fetched=digest.total_fetched,
         total_after_dedup=digest.total_after_dedup,

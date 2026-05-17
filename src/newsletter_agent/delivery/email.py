@@ -18,12 +18,9 @@ class EmailDelivery:
         self.from_address = from_address
         self.to_addresses = to_addresses
 
-    def send_digest(self, digest: Digest, topic: str | None = None) -> str:
-        html = render_digest_html(digest)
-        if topic:
-            subject = f"[{topic}] Digest — {digest.date.strftime('%B %d, %Y')}"
-        else:
-            subject = f"Research Digest — {digest.date.strftime('%B %d, %Y')}"
+    def send_digest(self, digest: Digest, title: str = "Intelligence Digest") -> str:
+        html = render_digest_html(digest, title=title)
+        subject = f"{title} — {digest.date.strftime('%B %d, %Y')}"
 
         critical_count = len(digest.critical)
         if critical_count > 0:
