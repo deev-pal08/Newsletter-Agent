@@ -61,13 +61,6 @@ class DedupConfig(BaseModel):
     cache_embeddings: bool = True
 
 
-class DiscoveryConfig(BaseModel):
-    tavily_queries_per_scan: int = 5
-    include_domains: list[str] = Field(default_factory=list)
-    exclude_domains: list[str] = Field(default_factory=list)
-    search_depth: str = "advanced"
-
-
 class ExtractionConfig(BaseModel):
     jina_enabled: bool = True
     firecrawl_enabled: bool = False
@@ -79,6 +72,33 @@ class FilteringConfig(BaseModel):
     enabled: bool = True
     model: str = "deepseek-v4-flash"
     fail_open: bool = True
+
+
+class TavilySearchConfig(BaseModel):
+    enabled: bool = True
+    search_depth: str = "advanced"
+    max_results_per_query: int = 10
+    max_concurrent_queries: int = 5
+
+
+class ExaSearchConfig(BaseModel):
+    enabled: bool = True
+    max_results_per_query: int = 10
+    max_concurrent_queries: int = 5
+
+
+class PerplexitySearchConfig(BaseModel):
+    enabled: bool = True
+    model: str = "sonar-deep-research"
+    prompts_to_run: int = 2
+    max_concurrent: int = 2
+
+
+class SearchConfig(BaseModel):
+    domain_context: str = ""
+    tavily: TavilySearchConfig = TavilySearchConfig()
+    exa: ExaSearchConfig = ExaSearchConfig()
+    perplexity: PerplexitySearchConfig = PerplexitySearchConfig()
 
 
 class AppConfig(BaseModel):
@@ -95,9 +115,9 @@ class AppConfig(BaseModel):
     email: EmailConfig = EmailConfig()
     health: HealthConfig = HealthConfig()
     dedup: DedupConfig = DedupConfig()
-    discovery: DiscoveryConfig = DiscoveryConfig()
     extraction: ExtractionConfig = ExtractionConfig()
     filtering: FilteringConfig = FilteringConfig()
+    search: SearchConfig = SearchConfig()
     state_dir: str = "data"
 
 

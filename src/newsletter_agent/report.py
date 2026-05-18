@@ -22,11 +22,17 @@ class RunReport:
     web_extractions: list[tuple[str, str]] = field(default_factory=list)
     web_failures: list[tuple[str, str]] = field(default_factory=list)
 
-    # Tavily discovery
+    # Tavily discovery (legacy, kept for backward compat)
     tavily_queries_ok: int = 0
     tavily_articles: int = 0
     tavily_queries_failed: list[tuple[str, str]] = field(default_factory=list)
     tavily_skipped: str | None = None
+
+    # Deep search engine
+    search_layers_ok: list[tuple[str, int, float]] = field(default_factory=list)
+    search_layers_failed: list[tuple[str, str]] = field(default_factory=list)
+    search_unique_urls: int = 0
+    search_high_confidence: int = 0
 
     # DeepSeek filtering
     filter_kept: int = 0
@@ -79,6 +85,12 @@ class RunReport:
     def add_tavily_failed(self, query: str, error: str) -> None:
         self.tavily_queries_failed.append((query, error))
 
+    def add_search_layer_ok(self, name: str, count: int, duration: float) -> None:
+        self.search_layers_ok.append((name, count, duration))
+
+    def add_search_layer_failed(self, name: str, error: str) -> None:
+        self.search_layers_failed.append((name, error))
+
     @property
     def has_issues(self) -> bool:
         return bool(
@@ -106,14 +118,14 @@ class RunReport:
             parts = ", ".join(f"{n}: {c}" for n, c in self.sources_ok)
             lines.append(f"  Sources:   {ok_count} OK ({parts})")
         else:
-            parts = []
+            status_parts: list[str] = []
             if ok_count:
-                parts.append(f"{ok_count} OK")
+                status_parts.append(f"{ok_count} OK")
             if fail_count:
-                parts.append(f"{fail_count} failed")
+                status_parts.append(f"{fail_count} failed")
             if skip_count:
-                parts.append(f"{skip_count} skipped")
-            lines.append(f"  Sources:   {', '.join(parts)}")
+                status_parts.append(f"{skip_count} skipped")
+            lines.append(f"  Sources:   {', '.join(status_parts)}")
             for name, count in self.sources_ok:
                 lines.append(f"    [OK]   {name}: {count} articles")
             for name, error in self.sources_failed:
@@ -132,7 +144,7 @@ class RunReport:
             for w in warnings:
                 lines.append(f"    - {w}")
 
-        # Tavily
+        # Tavily (legacy, only shown if old scanner was used)
         total_queries = self.tavily_queries_ok + len(self.tavily_queries_failed)
         if self.tavily_skipped:
             lines.append(f"  Discovery: skipped ({self.tavily_skipped})")
@@ -150,6 +162,24 @@ class RunReport:
                 for query, error in self.tavily_queries_failed:
                     short = query[:60] + "..." if len(query) > 60 else query
                     lines.append(f'    - "{short}": {error}')
+
+        # Deep search engine
+        if self.search_layers_ok or self.search_layers_failed:
+            ok_count = len(self.search_layers_ok)
+            fail_count = len(self.search_layers_failed)
+            total_results = sum(c for _, c, _ in self.search_layers_ok)
+            lines.append(
+                f"  Search:    {ok_count} layers OK, {total_results} raw -> "
+                f"{self.search_unique_urls} unique URLs"
+            )
+            for name, count, dur in self.search_layers_ok:
+                lines.append(f"    [OK]   {name}: {count} results in {dur:.1f}s")
+            for name, error in self.search_layers_failed:
+                lines.append(f"    [FAIL] {name}: {error}")
+            if self.search_high_confidence:
+                lines.append(
+                    f"    High confidence (3+ layers): {self.search_high_confidence} URLs"
+                )
 
         # Filter
         if self.filter_skipped:

@@ -4,29 +4,34 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from datetime import UTC, datetime
+
+import anthropic
 
 from newsletter_agent.config import AppConfig, load_about_me
 from newsletter_agent.cost_tracker import CostBreakdown
 from newsletter_agent.delivery.email import EmailDelivery
-from newsletter_agent.report import RunReport
 from newsletter_agent.delivery.templates import render_digest_html
 from newsletter_agent.models import Article, Digest, Priority
 from newsletter_agent.ranking.filter import filter_articles
 from newsletter_agent.ranking.ranker import ArticleRanker, BatchRanker
-from newsletter_agent.scanner import ArticleScanner
+from newsletter_agent.report import RunReport
+from newsletter_agent.search.engine import DeepSearchEngine
 from newsletter_agent.sources import get_enabled_sources
 from newsletter_agent.state.store import StateStore
 from newsletter_agent.utils import find_semantic_duplicates
-
-import anthropic
 
 logger = logging.getLogger(__name__)
 
 
 class Pipeline:
-    def __init__(self, config: AppConfig, model_override: str | None = None, topic: str | None = None):
+    def __init__(
+        self, config: AppConfig,
+        model_override: str | None = None,
+        topic: str | None = None,
+    ):
         self.config = config
         self.state = StateStore(config.state_dir)
         self.model = model_override or config.llm.model
@@ -66,7 +71,8 @@ class Pipeline:
         else:
             prompt = (
                 f"User profile:\n{self.about_me or 'Not provided'}\n\n"
-                f"User interests: {', '.join(self.config.interests) if self.config.interests else 'general'}\n\n"
+                f"User interests: "
+                f"{', '.join(self.config.interests) if self.config.interests else 'general'}\n\n"
                 f"Here are some article titles from the digest:\n{titles_text}\n\n"
                 "Generate a short, generic digest title (2-5 words) that captures "
                 "the overall theme of this user's interests and digest content. "
@@ -118,16 +124,82 @@ class Pipeline:
         logger.info("Fetching from %d sources...", len(sources))
         all_articles = asyncio.run(self._fetch_all(sources, self.report))
 
-        # Web article search via Tavily
-        scanner = ArticleScanner(self.config, about_me=self.about_me)
-        web_articles = scanner.search(report=self.report, topic=self.topic)
-        if web_articles:
-            logger.info("Tavily added %d articles", len(web_articles))
-            all_articles.extend(web_articles)
-            self.cost.add_tavily(
-                self.report.tavily_queries_ok + len(self.report.tavily_queries_failed),
-                self.config.discovery.search_depth,
+        # Deep Search Engine — replaces old single-layer Tavily scanner
+        search_topic = self.topic or "latest news and research"
+        if not self.topic and self.config.interests:
+            search_topic = ", ".join(self.config.interests[:5])
+        search_engine = DeepSearchEngine(
+            config=self.config.search,
+            anthropic_api_key=self.config.llm.api_key,
+        )
+        search_result = search_engine.run(topic=search_topic, about_me=self.about_me)
+
+        if search_result.merged_results:
+            from newsletter_agent.search.classifier import classify_search_results
+
+            # Classify results using DeepSeek: individual articles vs index pages
+            valid_results = [r for r in search_result.merged_results if r.url]
+            deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY")
+            classifications = classify_search_results(
+                valid_results,
+                api_key=deepseek_api_key,
             )
+
+            # Split based on classifications
+            individual_results = []
+            index_results = []
+            for r in valid_results:
+                classification = classifications.get(r.url, "article")
+                if classification == "index":
+                    index_results.append(r)
+                else:
+                    individual_results.append(r)
+
+            logger.info(
+                "DeepSeek classified %d results: %d articles, %d index pages",
+                len(valid_results), len(individual_results), len(index_results),
+            )
+            if deepseek_api_key:
+                self.cost.add_classification(len(valid_results))
+
+            # Convert individual articles directly
+            web_articles = [
+                Article(
+                    url=r.url,
+                    title=r.title or r.url,
+                    source_id="web_search",
+                    source_name=f"Deep Search ({r.source_layer})",
+                    raw_summary=r.description[:500] if r.description else "",
+                    published_at=None,
+                )
+                for r in individual_results
+            ]
+
+            # Extract articles from index pages
+            extracted_articles = asyncio.run(
+                self._extract_from_index_pages(index_results, self.report)
+            )
+
+            # Merge all deep search articles
+            deep_search_articles = web_articles + extracted_articles
+            logger.info(
+                "Deep search added %d articles (%d direct, %d from %d index pages)",
+                len(deep_search_articles), len(web_articles),
+                len(extracted_articles), len(index_results),
+            )
+            all_articles.extend(deep_search_articles)
+            self.cost.add_deep_search(search_result.cost_estimate_usd)
+
+        # Report deep search layer results
+        for lr in search_result.layer_results:
+            if lr.success:
+                self.report.add_search_layer_ok(lr.layer_name, len(lr.results), lr.duration_seconds)
+            else:
+                self.report.add_search_layer_failed(lr.layer_name, lr.error or "unknown")
+        self.report.search_unique_urls = search_result.unique_urls
+        self.report.search_high_confidence = sum(
+            1 for r in search_result.merged_results if r.high_confidence
+        )
 
         new_articles = self._deduplicate(all_articles, self.report)
         if self.report.dedup_semantic:
@@ -281,6 +353,83 @@ class Pipeline:
                 if report is not None:
                     report.add_source_ok(source.name, len(result))
         return articles
+
+    async def _extract_from_index_pages(
+        self, index_results: list, report: RunReport | None = None,  # type: ignore[type-arg]
+    ) -> list[Article]:
+        """
+        Route index pages through WebSource for extraction.
+
+        Index pages (blog homepages, landing pages, etc.) are fetched via
+        WebSource which tries tiered extraction: RSS → Jina → Firecrawl → AI.
+
+        Discovered index pages are saved to resources DB with discovered_by='deep_search'.
+        """
+        from newsletter_agent.sources.web import WebSource
+
+        if not index_results:
+            return []
+
+        logger.info(
+            "Extracting content from %d index pages via WebSource...",
+            len(index_results),
+        )
+
+        # Group by URL to avoid duplicates
+        unique_urls = {r.url for r in index_results if r.url}
+        url_to_result = {r.url: r for r in index_results if r.url}
+
+        # Create temp WebSource for each index page and fetch
+        all_extracted: list[Article] = []
+        new_resources = 0
+        for url in unique_urls:
+            result = url_to_result[url]
+            name = result.title or url.split("/")[-1] or url
+
+            try:
+                # Extract articles first before deciding to save
+                web_source = WebSource(
+                    pages={name[:200]: url},
+                    api_key=self.config.llm.api_key,
+                    jina_enabled=self.config.extraction.jina_enabled,
+                    firecrawl_enabled=self.config.extraction.firecrawl_enabled,
+                    haiku_fallback_enabled=self.config.extraction.haiku_fallback_enabled,
+                    max_pages=self.config.extraction.max_pages,
+                )
+                articles = await web_source.fetch(report=report)
+
+                # Only add to DB if:
+                # 1. Not already present
+                # 2. Extraction returned articles
+                if len(articles) > 0 and not self.state.resource_exists(url):
+                    resource_id = self.state.add_resource(
+                        name=name[:200],  # Limit length
+                        url=url,
+                        source_type="web",
+                        discovered_by="deep_search",
+                        description=f"Index page from deep search ({result.source_layer})",
+                    )
+                    if resource_id is not None:
+                        new_resources += 1
+                        logger.info("Added new resource: %s (%d articles)", name[:50], len(articles))
+
+                all_extracted.extend(articles)
+                logger.info(
+                    "Index page %s → extracted %d articles",
+                    url[:60], len(articles),
+                )
+            except Exception as e:
+                logger.warning("Failed to extract from index page %s: %s", url[:60], e)
+                if report is not None:
+                    report.add_warning(f"Index page extraction failed: {url[:50]}")
+
+        if new_resources > 0:
+            logger.info(
+                "Saved %d new index pages to resources DB (deep_search)",
+                new_resources,
+            )
+
+        return all_extracted
 
     def _deduplicate(
         self, articles: list[Article], report: RunReport | None = None,

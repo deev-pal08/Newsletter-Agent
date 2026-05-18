@@ -1,4 +1,24 @@
 # Newsletter Agent Configuration
+#
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🚀 NEW USER? START WITH ZERO RESOURCES
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# You don't need to manually add RSS feeds or web pages to get started.
+# The Deep Search Engine will auto-discover and populate resources for you:
+#
+#   1. Fill in AboutMe.md (your skills, interests, and learning goals)
+#   2. Run: newsletter send -t "Your Topic"
+#   3. The Deep Search Engine discovers 20-30 index pages:
+#      - GitHub repos (awesome lists, security guides)
+#      - Mailing lists (oss-security, conference archives)
+#      - Research databases (arXiv, SSRN)
+#      - Official sources (CISA, OWASP, CERT advisories)
+#   4. Index pages are automatically added to your DB if they return articles
+#   5. Future runs use discovered resources + continue discovering more
+#
+# This creates a self-improving knowledge base tailored to your interests.
+# Pages that fail (403 errors, DNS failures, 0 articles) are skipped automatically.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # Your profile (used for personalized ranking and article discovery)
 # Copy AboutMe.example.md to AboutMe.md and fill in your details
@@ -17,10 +37,21 @@ interests:
   - machine learning
 
 # Toggle sources on/off
-# RSS feeds, subreddits, and web pages are managed in the database:
-#   newsletter resources       # list all resources
-#   newsletter add-resource    # add a resource
-#   newsletter remove-resource # remove a resource
+# RSS feeds, subreddits, and web pages are managed in the database.
+# Resources can be populated in 2 ways:
+#   1. Manually via CLI:
+#        newsletter add-resource --name "Hacker News" \
+#          --url "https://news.ycombinator.com" \
+#          --feed-url "https://hnrss.org/frontpage" --type blog
+#   2. Auto-discovered by Deep Search Engine (recommended for new users):
+#        newsletter send -t "Your Topic"
+#        → Automatically discovers and adds 20-30 productive index pages
+#        → Only adds pages that successfully return articles
+#
+# List/manage resources:
+#   newsletter resources              # list all resources
+#   newsletter add-resource           # add a resource manually
+#   newsletter remove-resource <ID>   # remove a resource by ID
 sources:
   rss:
     enabled: true
@@ -37,15 +68,6 @@ llm:
   max_articles_per_batch: 100
   use_batch: true                # Batch API is 50% cheaper (default: on)
   prompt_caching: true           # cache system prompt for 90% input savings
-
-# Web article discovery (Tavily Search API)
-# LLM-generated queries search the web for fresh articles matching your profile
-# Topic mode (--topic) automatically uses 10 queries for comprehensive coverage
-discovery:
-  tavily_queries_per_scan: 5     # number of search queries per run (10 for topic mode)
-  include_domains: []            # e.g. ["example.com", "blog.example.org"]
-  exclude_domains: []            # e.g. ["pinterest.com", "quora.com"]
-  search_depth: "advanced"       # "basic" (1 credit) or "advanced" (4 credits) per search
 
 # Web page extraction settings
 extraction:
@@ -85,3 +107,34 @@ health:
   auto_disable: true                 # auto-skip sources with repeated failures
   max_consecutive_failures: 3        # failures before auto-disabling
   retry_after_hours: 24              # retry disabled sources after this cooldown
+
+# ── Deep Search Engine ────────────────────────────────────────────────────────
+# All layers run on every scan. Set enabled: false to disable a layer.
+# Disabling a layer reduces cost but also reduces coverage depth.
+
+search:
+  # Domain-specific guidance injected into all search prompts.
+  # Tailors query generation, Perplexity, and GPT Researcher to your field.
+  # Leave empty for generic results that adapt purely to the topic.
+  # Example for cybersecurity:
+  #   domain_context: |
+  #     Prioritize CVE disclosures, security advisories, exploit PoCs,
+  #     threat intelligence reports, and researcher blog writeups.
+  domain_context: ""
+
+  tavily:
+    enabled: true
+    search_depth: "advanced"          # basic (1 credit/query) or advanced (2 credits/query)
+    max_results_per_query: 10
+    max_concurrent_queries: 5
+
+  exa:
+    enabled: true
+    max_results_per_query: 10
+    max_concurrent_queries: 5
+
+  perplexity:
+    enabled: true
+    model: "sonar-deep-research"      # autonomous multi-step research
+    prompts_to_run: 2                 # 2 focused research prompts per scan
+    max_concurrent: 2                 # run 2 at a time

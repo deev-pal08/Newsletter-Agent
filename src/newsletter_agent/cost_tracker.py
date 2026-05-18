@@ -11,6 +11,8 @@ class CostBreakdown:
     """Accumulates estimated costs for each pipeline stage."""
 
     discovery_tavily_credits: int = 0
+    deep_search: float = 0.0
+    classification_deepseek: float = 0.0
     extraction_firecrawl: float = 0.0
     dedup_openai: float = 0.0
     filtering_deepseek: float = 0.0
@@ -20,16 +22,24 @@ class CostBreakdown:
     @property
     def total(self) -> float:
         return (
-            self.extraction_firecrawl
+            self.deep_search
+            + self.classification_deepseek
+            + self.extraction_firecrawl
             + self.dedup_openai
             + self.filtering_deepseek
             + self.ranking_claude
         )
 
-    def add_tavily(self, searches: int, depth: str = "advanced") -> None:
-        credits_per = 4 if depth == "advanced" else 1
-        self.discovery_tavily_credits += searches * credits_per
-        self._details["discovery"] = f"{searches} queries x {credits_per} credits"
+    def add_deep_search(self, cost: float) -> None:
+        self.deep_search += cost
+        self._details["deep_search"] = f"${cost:.2f}"
+
+    def add_classification(self, results: int) -> None:
+        # DeepSeek Chat API: ~$0.01 per batch (50 URLs/batch)
+        # Round up to nearest batch
+        batches = (results + 49) // 50
+        self.classification_deepseek += batches * 0.01
+        self._details["classification"] = f"{results} URLs ({batches} batches)"
 
     def add_filter(self, articles: int) -> None:
         self.filtering_deepseek += 0.025
@@ -54,6 +64,12 @@ class CostBreakdown:
         if self.discovery_tavily_credits > 0:
             lines.append(f"  Discovery (Tavily):       {self.discovery_tavily_credits} credits"
                          f"   ({d.get('discovery', '')})")
+        if self.deep_search > 0:
+            lines.append(f"  Deep Search Engine:       ${self.deep_search:.2f}"
+                         f"   ({d.get('deep_search', '')})")
+        if self.classification_deepseek > 0:
+            lines.append(f"  Classification (DeepSeek):${self.classification_deepseek:.3f}"
+                         f"   ({d.get('classification', '')})")
         if self.extraction_firecrawl > 0:
             lines.append(f"  Extraction (Firecrawl):   ${self.extraction_firecrawl:.3f}")
         if self.dedup_openai > 0:
@@ -72,6 +88,8 @@ class CostBreakdown:
     def to_dict(self) -> dict[str, float | int]:
         return {
             "discovery_tavily_credits": self.discovery_tavily_credits,
+            "deep_search": round(self.deep_search, 4),
+            "classification_deepseek": round(self.classification_deepseek, 4),
             "extraction_firecrawl": round(self.extraction_firecrawl, 4),
             "dedup_openai": round(self.dedup_openai, 6),
             "filtering_deepseek": round(self.filtering_deepseek, 4),

@@ -46,7 +46,12 @@ cp config.example.yaml config.yaml
 cp .env.example .env
 # Edit .env — paste your API keys (auto-loaded via python-dotenv)
 
-# 7. Add your sources (the DB starts empty)
+# 7a. OPTION 1: Start with zero resources (auto-discovery)
+#     The Deep Search Engine will discover and add resources for you
+uv run newsletter send -t "Your Topic" --dry-run
+uv run newsletter resources  # Check auto-discovered resources
+
+# 7b. OPTION 2: Add sources manually (traditional approach)
 uv run newsletter add-resource --name "Hacker News" \
   --url "https://news.ycombinator.com" \
   --feed-url "https://hnrss.org/frontpage" \
@@ -56,7 +61,7 @@ uv run newsletter add-resource --name "TechCrunch" \
   --feed-url "https://techcrunch.com/feed/" \
   --type blog
 
-# 8. Test a source
+# 8. Test a source (if using manual approach)
 uv run newsletter test-source rss
 
 # 9. Preview a full ranked digest (requires Anthropic key)
@@ -68,6 +73,91 @@ uv run newsletter send
 # 11. (Optional) Install daily schedule
 uv run newsletter install-schedule --time 08:00
 ```
+
+## New User? Start with Zero Resources 🚀
+
+**You don't need to manually add sources to get started.** The Deep Search Engine will discover and populate resources for you automatically.
+
+### How it works:
+
+1. **Create your profile** (`AboutMe.md`) — describe your skills, interests, and learning goals
+2. **Run a topic-focused search**:
+   ```bash
+   uv run newsletter send -t "AI Security" --dry-run
+   ```
+3. **The Deep Search Engine**:
+   - Generates 20 targeted queries using Claude Sonnet based on your profile
+   - Searches 3 parallel layers: Tavily, Exa Neural Search, Perplexity Deep Research
+   - Uses DeepSeek LLM to classify results as "articles" or "index pages"
+   - **Automatically adds productive index pages to your resource DB**
+4. **Future runs**:
+   - Fetch from your auto-discovered resources
+   - Continue discovering new resources
+   - Build a self-improving knowledge base
+
+### Example: Starting from scratch
+
+```bash
+# Empty database - zero resources
+uv run newsletter resources
+# → 0 resources
+
+# Run a topic-focused digest
+uv run newsletter send -t "Cybersecurity Vulnerabilities"
+
+# After the run, check your resources
+uv run newsletter resources
+# → 23 new resources discovered and added automatically!
+#   Examples:
+#   - GitHub security repos
+#   - Security mailing lists
+#   - Conference talk archives
+#   - Research paper indexes
+```
+
+### What gets auto-discovered?
+
+The Deep Search Engine finds:
+- **GitHub repositories** with curated security resources
+- **Mailing list archives** (oss-security, full-disclosure)
+- **Conference archives** (DEF CON, Black Hat, USENIX talks)
+- **Topic-specific aggregators** (awesome lists, research databases)
+- **Expert blogs** and independent researchers
+- **Official advisories** (CERT, CISA, vendor security bulletins)
+
+**Smart filtering**: Index pages are **only** added to your DB if they successfully return articles. Pages that return 0 articles (403 errors, dead links, DNS failures) are automatically skipped — keeping your resource DB clean.
+
+### Traditional approach (manual curation)
+
+You can still add resources manually if you prefer:
+
+```bash
+uv run newsletter add-resource --name "Krebs on Security" \
+  --url "https://krebsonsecurity.com" \
+  --feed-url "https://krebsonsecurity.com/feed/" \
+  --type blog
+```
+
+### Hybrid approach (best of both worlds)
+
+Start with a few hand-picked sources + let the Deep Search Engine discover the rest:
+
+```bash
+# Add your favorite 3-5 sources manually
+uv run newsletter add-resource --name "Hacker News" \
+  --url "https://news.ycombinator.com" \
+  --feed-url "https://hnrss.org/frontpage" \
+  --type blog
+
+# Then run topic searches to auto-discover niche sources
+uv run newsletter send -t "LLM Security"
+uv run newsletter send -t "Web3 Exploits"
+uv run newsletter send -t "Supply Chain Attacks"
+```
+
+Each topic run discovers 10-30 new high-quality resources specific to that domain.
+
+---
 
 ## Configuration
 
@@ -248,11 +338,11 @@ uv run newsletter install-schedule --uninstall
 |---------|---------|-------|
 | Claude Haiku (Batch API, default) | ~$0.07 | Ranking + summarization |
 | Claude Sonnet (Batch API) | ~$0.14 | Higher quality ranking |
-| Tavily Search | 20-40 credits | 4 credits/query (advanced), 1,000 free credits/month |
+| Tavily Search | 40 credits | 2 credits/query (advanced), 1,000 free credits/month |
 | DeepSeek V4 Flash | ~$0.025 | Relevance filter + query generation |
 | OpenAI Embeddings | ~$0.0001 | Semantic dedup (text-embedding-3-small) |
 
-Topic-focused runs (`--topic`) use 10 Tavily queries instead of 5, so ~40 credits per topic run. Actual costs depend on article volume.
+Each run uses 20 Tavily queries × 2 credits = 40 credits. Actual costs depend on article volume.
 
 ## Resource Management
 

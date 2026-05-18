@@ -93,10 +93,10 @@ def compute_embeddings_batch(
         client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
         uncached_titles = [titles[i] for i in uncached_indices]
 
-        EMBED_BATCH = 2048
+        embed_batch = 2048
         all_embeddings: list[Any] = []
-        for start in range(0, len(uncached_titles), EMBED_BATCH):
-            chunk = uncached_titles[start : start + EMBED_BATCH]
+        for start in range(0, len(uncached_titles), embed_batch):
+            chunk = uncached_titles[start : start + embed_batch]
             response = client.embeddings.create(
                 model=model,
                 input=chunk,

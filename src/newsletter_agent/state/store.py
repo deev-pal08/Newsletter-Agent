@@ -181,6 +181,14 @@ class StateStore:
         row = self._conn.execute("SELECT COUNT(*) FROM resources").fetchone()
         return row[0] if row else 0
 
+    def resource_exists(self, url: str) -> bool:
+        """Check if a resource with this exact URL already exists in the DB."""
+        row = self._conn.execute(
+            "SELECT 1 FROM resources WHERE url = ?",
+            (url,),
+        ).fetchone()
+        return row is not None
+
     # --- Seen articles (dedup) ---
 
     def is_seen_normalized(self, normalized: str) -> bool:
