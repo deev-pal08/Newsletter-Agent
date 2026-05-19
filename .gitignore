@@ -21,6 +21,9 @@ AboutMe.md
 # Runtime data
 data/
 
+# Development/testing scripts
+scripts/
+
 # OS
 .DS_Store
 Thumbs.db
