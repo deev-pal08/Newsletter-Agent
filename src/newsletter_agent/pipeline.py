@@ -88,7 +88,7 @@ class Pipeline:
                 base_url="https://api.anthropic.com",
             )
             response = client.messages.create(
-                model="claude-haiku-4-5",
+                model=self.model,
                 max_tokens=30,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -395,6 +395,7 @@ class Pipeline:
                     firecrawl_enabled=self.config.extraction.firecrawl_enabled,
                     haiku_fallback_enabled=self.config.extraction.haiku_fallback_enabled,
                     max_pages=self.config.extraction.max_pages,
+                    model=self.model,
                 )
                 articles = await web_source.fetch(report=report)
 

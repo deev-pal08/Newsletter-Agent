@@ -64,6 +64,7 @@ class WebSource(BaseSource):
         firecrawl_enabled: bool = False,
         haiku_fallback_enabled: bool = True,
         max_pages: int = 3,
+        model: str = "claude-haiku-4-5",
     ):
         self._pages = pages
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -71,6 +72,7 @@ class WebSource(BaseSource):
         self.firecrawl_enabled = firecrawl_enabled
         self.haiku_fallback_enabled = haiku_fallback_enabled
         self.max_pages = max_pages
+        self.model = model
 
     @property
     def name(self) -> str:
@@ -223,7 +225,7 @@ class WebSource(BaseSource):
             )
             return [], "none", raw_html
 
-        articles = _try_ai(resp.text, page_name, page_url, self._api_key)
+        articles = _try_ai(resp.text, page_name, page_url, self._api_key, self.model)
         logger.info("  %s: %d articles via AI extraction", page_name, len(articles))
         return articles, "AI fallback", raw_html
 
@@ -591,6 +593,7 @@ def _try_ai(
     page_name: str,
     page_url: str,
     api_key: str,
+    model: str = "claude-haiku-4-5",
 ) -> list[Article]:
     content = _html_to_text(html, page_url)
     if not content.strip():
@@ -603,7 +606,7 @@ def _try_ai(
 
     client = anthropic.Anthropic(api_key=api_key, base_url="https://api.anthropic.com")
     response = client.messages.create(
-        model="claude-haiku-4-5",
+        model=model,
         max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )
