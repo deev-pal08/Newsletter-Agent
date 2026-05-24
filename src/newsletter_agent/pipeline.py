@@ -22,6 +22,7 @@ from newsletter_agent.search.engine import DeepSearchEngine
 from newsletter_agent.sources import get_enabled_sources
 from newsletter_agent.state.store import StateStore
 from newsletter_agent.utils import find_semantic_duplicates
+from newsletter_agent.validation import is_junk_article
 
 logger = logging.getLogger(__name__)
 
@@ -412,7 +413,10 @@ class Pipeline:
                     )
                     if resource_id is not None:
                         new_resources += 1
-                        logger.info("Added new resource: %s (%d articles)", name[:50], len(articles))
+                        logger.info(
+                            "Added new resource: %s (%d articles)",
+                            name[:50], len(articles),
+                        )
 
                 all_extracted.extend(articles)
                 logger.info(
@@ -435,6 +439,13 @@ class Pipeline:
     def _deduplicate(
         self, articles: list[Article], report: RunReport | None = None,
     ) -> list[Article]:
+        clean = [a for a in articles if not is_junk_article(a)]
+        if len(clean) < len(articles):
+            logger.info(
+                "Validation removed %d junk articles", len(articles) - len(clean),
+            )
+        articles = clean
+
         seen_normalized: set[str] = set()
         new: list[Article] = []
 
@@ -484,7 +495,7 @@ class Pipeline:
                         report.dedup_fallback_reason = "OPENAI_API_KEY not set"
                         report.dedup_removed = dedup_by_url
             except Exception as exc:
-                logger.warning("Semantic dedup failed, falling back to difflib", exc_info=True)
+                logger.warning("Semantic dedup failed, falling back: %s", exc)
                 if report is not None:
                     report.dedup_fallback = True
                     report.dedup_fallback_reason = str(exc)

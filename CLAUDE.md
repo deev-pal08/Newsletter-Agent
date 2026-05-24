@@ -35,6 +35,7 @@ delivers prioritized daily digest via Resend email.
 - `src/newsletter_agent/report.py` — per-run health report (RunReport dataclass)
 - `src/newsletter_agent/cost_tracker.py` — per-run cost estimation
 - `src/newsletter_agent/utils.py` — URL normalization, semantic dedup
+- `src/newsletter_agent/validation.py` — centralized junk detection for articles and resources
 - `src/newsletter_agent/scheduling.py` — LaunchAgent/crontab/Task Scheduler scheduling
 - `AboutMe.md` — user profile (skills, interests, learning goals)
 - `tests/` — mirrors src structure
@@ -189,10 +190,11 @@ rss, reddit, web (Tavily articles use `web_search` as source_id but it is not a 
 2. **Deep search** — 3 parallel search layers (Tavily, Exa, Perplexity) using 20 Claude-generated queries across 6 categories
 3. **DeepSeek Classification** — Classify search results as "article" (direct) or "index" (aggregator)
 4. **Index extraction** — Route index pages through WebSource, add to DB only if articles extracted
-5. **Deduplication** — URL normalization + title fingerprinting vs DB history, then OpenAI semantic embeddings for cross-source live dedup
-6. **Relevance filtering** — DeepSeek V4 Flash index-based filter removes noise (batched, 50/call, fail-open). Topic mode filters strictly to the specified topic.
-7. **Ranking** — Claude ranks and summarizes remaining articles (Batch API by default). Topic mode ranks exclusively by topic relevance.
-8. **Digest** — HTML email via Resend; cost breakdown and health report are printed to the CLI
+5. **Validation** — Centralized junk detection removes badge images, CDN URLs, URL-as-title, and short-title articles before dedup
+6. **Deduplication** — URL normalization + title fingerprinting vs DB history, then OpenAI semantic embeddings for cross-source live dedup
+7. **Relevance filtering** — DeepSeek V4 Flash index-based filter removes noise (batched, 50/call, fail-open). Topic mode filters strictly to the specified topic.
+8. **Ranking** — Claude ranks and summarizes remaining articles (Batch API by default). Topic mode ranks exclusively by topic relevance.
+9. **Digest** — HTML email via Resend; cost breakdown and health report are printed to the CLI
 
 ## Run Health Report
 Every `send` and `test-source` command prints a health report at the end showing:

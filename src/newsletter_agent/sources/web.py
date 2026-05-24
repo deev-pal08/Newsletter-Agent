@@ -30,6 +30,7 @@ from newsletter_agent.models import Article
 if TYPE_CHECKING:
     from newsletter_agent.report import RunReport
 from newsletter_agent.sources.base import BaseSource
+from newsletter_agent.validation import is_junk_article_url
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ class WebSource(BaseSource):
                     )
                     articles.extend(page_articles)
                 except Exception as e:
-                    logger.exception("WebSource failed for '%s'", page_name)
+                    logger.warning("WebSource failed for '%s': %s", page_name, e)
                     if report is not None:
                         report.add_web_failed(page_name, str(e))
                     continue
@@ -411,6 +412,8 @@ def _parse_markdown_articles(
         url = match.group(2).strip()
         if not title or len(title) < 5 or not url.startswith("http"):
             continue
+        if is_junk_article_url(url):
+            continue
         if url in seen_urls:
             continue
         seen_urls.add(url)
@@ -431,6 +434,8 @@ def _parse_markdown_articles(
             if url in seen_urls:
                 continue
             if url == page_url:
+                continue
+            if is_junk_article_url(url):
                 continue
             seen_urls.add(url)
             articles.append(Article(

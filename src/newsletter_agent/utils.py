@@ -6,7 +6,7 @@ import hashlib
 import os
 import re
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
 TRACKING_PARAMS = {
     "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
@@ -27,10 +27,11 @@ def normalize_url(url: str, strip_params: set[str] | None = None) -> str:
     if netloc.startswith("www."):
         netloc = netloc[4:]
     path = parsed.path.rstrip("/") or "/"
+    path = unquote(path)
 
     query_params = parse_qs(parsed.query, keep_blank_values=True)
     filtered = {k: v for k, v in query_params.items() if k.lower() not in params_to_strip}
-    query = urlencode(filtered, doseq=True) if filtered else ""
+    query = urlencode(sorted(filtered.items()), doseq=True) if filtered else ""
 
     return urlunparse((scheme, netloc, path, "", query, ""))
 

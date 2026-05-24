@@ -10,6 +10,7 @@ from typing import Any
 
 from newsletter_agent.models import Article, Digest
 from newsletter_agent.utils import normalize_url, title_fingerprint
+from newsletter_agent.validation import is_junk_resource_url
 
 CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS seen_articles (
@@ -154,6 +155,11 @@ class StateStore:
         discovered_by: str = "user",
         description: str = "",
     ) -> int | None:
+        if is_junk_resource_url(url):
+            return None
+        norm = normalize_url(url)
+        if self._resource_exists_normalized(norm):
+            return None
         try:
             cursor = self._conn.execute(
                 """INSERT INTO resources
@@ -182,12 +188,12 @@ class StateStore:
         return row[0] if row else 0
 
     def resource_exists(self, url: str) -> bool:
-        """Check if a resource with this exact URL already exists in the DB."""
-        row = self._conn.execute(
-            "SELECT 1 FROM resources WHERE url = ?",
-            (url,),
-        ).fetchone()
-        return row is not None
+        """Check if a resource with this URL (or its normalized form) exists."""
+        return self._resource_exists_normalized(normalize_url(url))
+
+    def _resource_exists_normalized(self, norm: str) -> bool:
+        rows = self._conn.execute("SELECT url FROM resources").fetchall()
+        return any(normalize_url(row[0]) == norm for row in rows)
 
     # --- Seen articles (dedup) ---
 

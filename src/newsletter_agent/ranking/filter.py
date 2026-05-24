@@ -148,10 +148,10 @@ def filter_articles(
         try:
             keep_indices = _filter_batch(client, batch, interests, about_me, model, topic=topic)
             filtered.extend(a for j, a in enumerate(batch) if j in keep_indices)
-        except Exception:
+        except Exception as e:
             logger.warning(
-                "Relevance filter failed for batch %d-%d",
-                i, i + len(batch), exc_info=True,
+                "Relevance filter failed for batch %d-%d: %s",
+                i, i + len(batch), e,
             )
             if report is not None:
                 report.filter_fallbacks.append(

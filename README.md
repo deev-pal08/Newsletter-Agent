@@ -294,10 +294,11 @@ If any search layer API key is not set, that layer is skipped. If all three are 
 
 1. **Deterministic fetch** — RSS feeds, Reddit subreddits, web pages with auto-pagination (all DB-driven, no time filtering)
 2. **Deep Search Engine** — 3 parallel search layers (Tavily, Exa, Perplexity) using 20 Claude-generated queries across 6 categories
-3. **Deduplication** — Two stages: DB history (URL + title fingerprint) removes previously seen articles, then OpenAI semantic embeddings catch cross-source duplicates in the live batch
-4. **Relevance filtering** — DeepSeek V4 Flash index-based filter removes noise (batched at 50/call, fail-open). In topic mode, filters strictly to the specified topic.
-5. **Ranking** — Claude ranks and summarizes remaining articles (Batch API by default, 50% cheaper). In topic mode, ranks exclusively by topic relevance.
-6. **Digest** — HTML email via Resend; cost breakdown and health report are printed to the CLI
+3. **Validation** — Centralized junk detection removes badge images, CDN URLs, URL-as-title, and short-title garbage before dedup
+4. **Deduplication** — Two stages: DB history (URL + title fingerprint) removes previously seen articles, then OpenAI semantic embeddings catch cross-source duplicates in the live batch
+5. **Relevance filtering** — DeepSeek V4 Flash index-based filter removes noise (batched at 50/call, fail-open). In topic mode, filters strictly to the specified topic.
+6. **Ranking** — Claude ranks and summarizes remaining articles (Batch API by default, 50% cheaper). In topic mode, ranks exclusively by topic relevance.
+7. **Digest** — HTML email via Resend; cost breakdown and health report are printed to the CLI
 
 Sources fetch everything available (no time-based filtering). The two-stage dedup handles repeat articles across runs, so no articles are lost between infrequent runs.
 
@@ -394,6 +395,7 @@ src/newsletter_agent/
 ├── scanner.py          # LLM-generated Tavily search queries
 ├── cost_tracker.py     # Per-run cost estimation
 ├── utils.py            # URL normalization, semantic dedup
+│   ├── validation.py       # Centralized junk detection for articles and resources
 ├── scheduling.py       # LaunchAgent / crontab / Task Scheduler
 ├── sources/
 │   ├── base.py         # BaseSource abstract class
@@ -419,6 +421,7 @@ src/newsletter_agent/
 - **No time filtering**: Sources fetch everything available; two-stage dedup handles repeats across runs — no articles lost between infrequent runs
 - **Deep Search Engine**: 3 parallel search layers (Tavily, Exa, Perplexity) with 20 Claude-generated queries across 6 categories
 - **Two-stage dedup**: DB history removes previously seen articles, OpenAI semantic embeddings catch cross-source duplicates in the live batch
+- **Junk detection**: Centralized validation layer filters badge images, CDN URLs, URL-as-title, and short-title garbage from articles and resources
 - **Topic-focused digests**: `--topic` flag filters the entire pipeline (search, filter, rank) to a single topic
 - **Relevance filtering**: DeepSeek V4 Flash index-based filter removes noise before expensive Claude ranking (batched at 50/call)
 - **Batch API ranking**: 50% cheaper via Claude Batch API (default mode)
