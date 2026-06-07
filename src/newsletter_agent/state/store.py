@@ -69,11 +69,20 @@ CREATE TABLE IF NOT EXISTS embeddings (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS article_tags (
+    article_url TEXT NOT NULL,
+    bug_class TEXT NOT NULL,
+    tagged_at TIMESTAMP NOT NULL,
+    source TEXT NOT NULL DEFAULT 'topic_digest',
+    PRIMARY KEY (article_url, bug_class)
+);
+
 CREATE INDEX IF NOT EXISTS idx_seen_normalized ON seen_articles(normalized_url);
 CREATE INDEX IF NOT EXISTS idx_seen_fingerprint ON seen_articles(title_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_digests_date ON digests(date);
 CREATE INDEX IF NOT EXISTS idx_resources_source_type ON resources(source_type);
 CREATE INDEX IF NOT EXISTS idx_resources_enabled ON resources(enabled);
+CREATE INDEX IF NOT EXISTS idx_article_tags_class ON article_tags(bug_class);
 """
 
 
@@ -225,6 +234,81 @@ class StateStore:
                 datetime.now(UTC).isoformat(),
             ),
         )
+
+    # --- Bug-class tagging (for cross-agent consumption by guide-agent) ---
+
+    def tag_articles_for_bug_class(
+        self,
+        bug_class: str,
+        article_urls: list[str],
+        source: str = "topic_digest",
+    ) -> dict[str, int]:
+        """Tag a batch of article URLs with a canonical bug class.
+
+        Idempotent — re-running with the same (url, bug_class) pair is a
+        no-op via the PRIMARY KEY constraint. Used by topic-focused
+        digest runs to mark which articles came back for a given bug
+        class, so guide-agent can consume them via per-class queries.
+        """
+        bc = (bug_class or "").strip().lower()
+        if not bc or not article_urls:
+            return {"inserted": 0, "skipped": 0}
+        inserted = 0
+        skipped = 0
+        now = datetime.now(UTC).isoformat()
+        for url in article_urls:
+            url = (url or "").strip()
+            if not url:
+                skipped += 1
+                continue
+            cur = self._conn.execute(
+                """INSERT OR IGNORE INTO article_tags
+                   (article_url, bug_class, tagged_at, source)
+                   VALUES (?, ?, ?, ?)""",
+                (url, bc, now, source),
+            )
+            if cur.rowcount > 0:
+                inserted += 1
+            else:
+                skipped += 1
+        self._conn.commit()
+        return {"inserted": inserted, "skipped": skipped, "total": len(article_urls)}
+
+    def get_tagged_articles(
+        self,
+        bug_class: str,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Return seen_articles tagged for this bug class, newest first.
+
+        Returns list of dicts with url, title, source_id, first_seen,
+        tagged_at, tag_source. Used by guide-agent's
+        fetch_newsletter_for_class adapter via read-only DB access.
+        """
+        bc = (bug_class or "").strip().lower()
+        if not bc:
+            return []
+        rows = self._conn.execute(
+            """SELECT sa.url, sa.title, sa.source_id, sa.first_seen,
+                      t.tagged_at, t.source AS tag_source
+               FROM seen_articles sa
+               JOIN article_tags t ON t.article_url = sa.url
+               WHERE t.bug_class = ?
+               ORDER BY t.tagged_at DESC
+               LIMIT ?""",
+            (bc, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_tagged_articles(self, bug_class: str) -> int:
+        bc = (bug_class or "").strip().lower()
+        if not bc:
+            return 0
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS c FROM article_tags WHERE bug_class = ?",
+            (bc,),
+        ).fetchone()
+        return int(row[0]) if row else 0
 
     # --- Source health ---
 

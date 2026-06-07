@@ -255,6 +255,18 @@ class Pipeline:
         # Persist state
         for article in new_articles:
             self.state.mark_seen(article)
+        # When --topic is set (i.e. user is mining for a specific bug class),
+        # tag every surviving article so guide-agent can consume them via
+        # the per-class article_tags table.
+        if self.topic and digest.articles:
+            tagged = self.state.tag_articles_for_bug_class(
+                bug_class=self.topic,
+                article_urls=[a.url for a in digest.articles if a.url],
+            )
+            logger.info(
+                "Tagged %d articles with bug_class=%s (skipped %d existing)",
+                tagged["inserted"], self.topic.lower(), tagged["skipped"],
+            )
         digest_id = self.state.save_digest(digest, cost_breakdown=self.cost.to_json())
         digest.digest_id = digest_id
         self.state.save()
